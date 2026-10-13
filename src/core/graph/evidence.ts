@@ -30,6 +30,12 @@ export type EvidenceProvenance = {
   sourceKind: EvidenceSourceKind;
   definition?: string;
   fieldName?: string;
+  /** Normalized name for the reverse/inverse relationship view when configured via slash syntax. */
+  inverseDefinition?: string;
+  /** Display field name for the reverse/inverse relationship view when configured via slash syntax. */
+  inverseFieldName?: string;
+  /** Target role for the reverse/inverse relationship view when configured via slash syntax. */
+  inverseRole?: EvidenceRole;
   rawValue?: string;
   line?: number;
   /** Character offsets in the declaring Markdown file when the evidence came from a body field. */
@@ -78,6 +84,24 @@ const inverseRole = (role: EvidenceRole): EvidenceRole | null => {
     case "hidden": return null;
   }
 };
+
+/**
+ * Return the canonical opposite ontology role for reciprocal/inverse relationship mappings.
+ *
+ * @param role The declared relationship role.
+ * @returns The inverse role, or null for roles with no inverse (e.g. hidden).
+ */
+export function oppositeOntologyRole(role: EvidenceRole): EvidenceRole | null {
+  switch (role) {
+    case "parent": return "child";
+    case "child": return "parent";
+    case "previous": return "next";
+    case "next": return "previous";
+    case "left": return "right";
+    case "right": return "left";
+    case "hidden": return null;
+  }
+}
 
 const pairKey = (a: string, b: string): string => a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
 const splitPairKey = (key: string): [string, string] => {
@@ -390,7 +414,7 @@ export class RelationEvidenceStore {
         continue;
       }
       if (item.declaredByPath !== targetPath || item.declaredTargetPath !== sourcePath) continue;
-      const role = inverseRole(item.declaredRole);
+      const role = item.inverseRole ?? inverseRole(item.declaredRole);
       if (!role) continue; // Hidden evidence is intentionally directional.
       output.push({
         ...item,
@@ -399,6 +423,8 @@ export class RelationEvidenceStore {
         targetPath,
         role,
         direction: inverseDirection(item.direction),
+        ...(item.inverseDefinition !== undefined ? { definition: item.inverseDefinition } : {}),
+        ...(item.inverseFieldName !== undefined ? { fieldName: item.inverseFieldName } : {}),
       });
     }
     return output;

@@ -25,7 +25,7 @@ const temp = mkdtempSync(join(tmpdir(), "kplex-index-test-"));
 // managed leaf, so the implementation must never adopt an arbitrary adjacent/pinned user tab.
 const mainSource = readFileSync(join(root, "src/main.ts"), "utf8");
 
-const appSource = readFileSync(join(root, "src/ui/App.tsx"), "utf8");
+const appSource = readFileSync(join(root, "src/ui/App.tsx"), "utf8").replace(/\r\n/g, "\n");
 const newRelatedSource = readFileSync(join(root, "src/ui/NewRelatedNoteModal.ts"), "utf8");
 const draggableDialogSource = readFileSync(join(root, "src/ui/components/DraggableDialog.ts"), "utf8");
 const ghostModalSource = readFileSync(join(root, "src/ui/MaterializeGhostModal.ts"), "utf8");
@@ -3077,7 +3077,9 @@ try {
       const original = owner[method];
       owner[method] = async (...args) => { await blocked; return original.apply(owner, args); };
       const start = stalled.restoreIndexedDbSnapshot(["Note A.md"]);
-      await settle();
+      for (let n = 0; n < 20 && stalled.getSnapshotHydrationDiagnostics().phase !== phase; n++) {
+        await settle();
+      }
       assert.equal(stalled.getSnapshotHydrationDiagnostics().phase, phase);
       if (phase === "source-authority") {
         await advanceWatchdog(60000);

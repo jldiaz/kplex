@@ -298,3 +298,105 @@ test("unassigned property URLs infer with raw provenance, configured roles and r
   await feed(preparer, [fact, ...found.records]); const patch = await preparer.finish(); assert.equal(patch.outcome, "prepared");
   assert.deepEqual(declarations(patch.patch.compilation), declarations(inferred), "full and patch share the URL default and hierarchy owner");
 });
+
+test("parseHierarchyFieldMapping parses forward and inverse slash syntax", () => {
+  const mapping1 = c.parseHierarchyFieldMapping("replies to/replied by");
+  assert.equal(mapping1.forward, "replies to");
+  assert.equal(mapping1.normalizedForward, "replies-to");
+  assert.equal(mapping1.inverse, "replied by");
+  assert.equal(mapping1.normalizedInverse, "replied-by");
+
+  const mapping2 = c.parseHierarchyFieldMapping("  replaces  /  replaced by  ");
+  assert.equal(mapping2.forward, "replaces");
+  assert.equal(mapping2.normalizedForward, "replaces");
+  assert.equal(mapping2.inverse, "replaced by");
+  assert.equal(mapping2.normalizedInverse, "replaced-by");
+
+  const mapping3 = c.parseHierarchyFieldMapping("parent");
+  assert.equal(mapping3.forward, "parent");
+  assert.equal(mapping3.normalizedForward, "parent");
+  assert.equal(mapping3.inverse, undefined);
+  assert.equal(mapping3.normalizedInverse, undefined);
+});
+
+test("slash syntax defines forward and inverse names for ontology categories and places reverse links in opposite roles with reverse labels", async () => {
+  const targetFile = new TFile("Target.md");
+  const hostInstance = host([targetFile]);
+  const meta = metadata({ "replies to": "[[Target]]" });
+  const found = await collect(meta, { host: hostInstance });
+  const source = ref(found.file);
+  const factSource = entityFact(source);
+  const factTarget = entityFact(ref(targetFile));
+
+  const settings = policy({ previous: ["replies to/replied by"] });
+  const graph = await compile([factSource, factTarget, ...found.records], settings);
+
+  // Check Source -> Target: role is previous, definition is replies-to
+  const sourceNode = graph.node(source.id);
+  const toTarget = sourceNode.neighbours.get(targetFile.path);
+  assert(toTarget, "Source has connection to Target");
+  assert.equal(c.classifyRelation(toTarget, "previous", false), c.RelationType.DEFINED);
+  assert.equal(toTarget.previousFriendTypeDefinition, "replies-to");
+
+  // Check Target -> Source: role is next, definition is replied-by
+  const targetNode = graph.node(targetFile.path);
+  const toSource = targetNode.neighbours.get(source.id);
+  assert(toSource, "Target has reverse connection to Source");
+  assert.equal(c.classifyRelation(toSource, "next", false), c.RelationType.DEFINED);
+  assert.equal(toSource.nextFriendTypeDefinition, "replied-by");
+});
+
+test("slash syntax inverse field declared in a note is recognized under the reciprocal role", async () => {
+  const targetFile = new TFile("Other.md");
+  const hostInstance = host([targetFile]);
+  const meta = metadata({ "replied by": "[[Other]]" });
+  const found = await collect(meta, { host: hostInstance });
+  const source = ref(found.file);
+  const factSource = entityFact(source);
+  const factTarget = entityFact(ref(targetFile));
+
+  const settings = policy({ previous: ["replies to/replied by"] });
+  const graph = await compile([factSource, factTarget, ...found.records], settings);
+
+  // Source -> Target: role is next, definition is replied-by
+  const sourceNode = graph.node(source.id);
+  const toTarget = sourceNode.neighbours.get(targetFile.path);
+  assert(toTarget, "Source has connection to Target");
+  assert.equal(c.classifyRelation(toTarget, "next", false), c.RelationType.DEFINED);
+  assert.equal(toTarget.nextFriendTypeDefinition, "replied-by");
+
+  // Target -> Source: role is previous, definition is replies-to
+  const targetNode = graph.node(targetFile.path);
+  const toSource = targetNode.neighbours.get(source.id);
+  assert(toSource, "Target has reverse connection to Source");
+  assert.equal(c.classifyRelation(toSource, "previous", false), c.RelationType.DEFINED);
+  assert.equal(toSource.previousFriendTypeDefinition, "replies-to");
+});
+
+test("parent/child slash syntax places reverse links in child role with inverse definition", async () => {
+  const targetFile = new TFile("ParentNote.md");
+  const hostInstance = host([targetFile]);
+  const meta = metadata({ "subclass of": "[[ParentNote]]" });
+  const found = await collect(meta, { host: hostInstance });
+  const source = ref(found.file);
+  const factSource = entityFact(source);
+  const factTarget = entityFact(ref(targetFile));
+
+  const settings = policy({ parents: ["subclass of/superclass of"] });
+  const graph = await compile([factSource, factTarget, ...found.records], settings);
+
+  // Source -> Target: parent, definition is subclass-of
+  const sourceNode = graph.node(source.id);
+  const toTarget = sourceNode.neighbours.get(targetFile.path);
+  assert(toTarget, "Source has parent connection to ParentNote");
+  assert.equal(c.classifyRelation(toTarget, "parent", false), c.RelationType.DEFINED);
+  assert.equal(toTarget.parentTypeDefinition, "subclass-of");
+
+  // Target -> Source: child, definition is superclass-of
+  const targetNode = graph.node(targetFile.path);
+  const toSource = targetNode.neighbours.get(source.id);
+  assert(toSource, "ParentNote has child connection to Source");
+  assert.equal(c.classifyRelation(toSource, "child", false), c.RelationType.DEFINED);
+  assert.equal(toSource.childTypeDefinition, "superclass-of");
+});
+

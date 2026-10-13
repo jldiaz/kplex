@@ -36,7 +36,8 @@ import { suggestHiddenProperty } from "./adapters/obsidian/hiddenPropertyName";
 import { LinkDirection, type GateRole, type GraphPage, type RelationshipRole } from "./types";
 import { OntologySuggester } from "./editor/OntologySuggester";
 import { isWebViewerAvailable, openExternalUrl } from "./adapters/obsidian/externalUrl";
-import { normalizeFieldName, parseBodyMetadata, iterateLinkReferencesFromValue } from "./core/parser/metadata";
+import { normalizeFieldName, parseBodyMetadata, iterateLinkReferencesFromValue, parseHierarchyFieldMapping } from "./core/parser/metadata";
+import { oppositeOntologyRole, type EvidenceRole } from "./core/graph/evidence";
 import { extractLinksFromValue, iterateResolvedLinksFromValue } from "./index/fieldParser";
 import type { RelationEvidence } from "./index/RelationEvidence";
 import { AddToOntologyModal, type OntologyAssignmentRole } from "./ui/AddToOntologyModal";
@@ -3860,7 +3861,11 @@ export default class KplexPlugin extends Plugin {
   async assignFieldToOntology(field: string, role: OntologyAssignmentRole): Promise<void> {
     const normalized = normalizeFieldName(field);
     const h = this.settings.hierarchy;
-    const remove = (items: string[]) => items.filter((item) => normalizeFieldName(item) !== normalized);
+    const matches = (item: string) => {
+      const mapping = parseHierarchyFieldMapping(item);
+      return mapping.normalizedForward === normalized || mapping.normalizedInverse === normalized;
+    };
+    const remove = (items: string[]) => items.filter((item) => !matches(item));
     h.hidden = remove(h.hidden);
     h.parents = remove(h.parents);
     h.children = remove(h.children);
@@ -4066,14 +4071,42 @@ export default class KplexPlugin extends Plugin {
 
   ontologyFieldsForRole(role: RelationshipRole): string[] {
     const h = this.settings.hierarchy;
-    switch (role) {
-      case "parent": return [...h.parents];
-      case "child": return [...h.children];
-      case "left": return [...h.leftFriends];
-      case "right": return [...h.rightFriends];
-      case "previous": return [...h.previous];
-      case "next": return [...h.next];
+    const directList = role === "parent" ? h.parents
+      : role === "child" ? h.children
+      : role === "left" ? h.leftFriends
+      : role === "right" ? h.rightFriends
+      : role === "previous" ? h.previous : h.next;
+
+    const oppositeRole = role === "parent" ? "child"
+      : role === "child" ? "parent"
+      : role === "left" ? "right"
+      : role === "right" ? "left"
+      : role === "previous" ? "next" : "previous";
+
+    const oppositeList = oppositeRole === "parent" ? h.parents
+      : oppositeRole === "child" ? h.children
+      : oppositeRole === "left" ? h.leftFriends
+      : oppositeRole === "right" ? h.rightFriends
+      : oppositeRole === "previous" ? h.previous : h.next;
+
+    const result: string[] = [];
+    const seen = new Set<string>();
+
+    for (const entry of directList) {
+      const mapping = parseHierarchyFieldMapping(entry);
+      if (!seen.has(mapping.normalizedForward)) {
+        seen.add(mapping.normalizedForward);
+        result.push(mapping.forward);
+      }
     }
+    for (const entry of oppositeList) {
+      const mapping = parseHierarchyFieldMapping(entry);
+      if (mapping.inverse && mapping.normalizedInverse && !seen.has(mapping.normalizedInverse)) {
+        seen.add(mapping.normalizedInverse);
+        result.push(mapping.inverse);
+      }
+    }
+    return result;
   }
 
   inverseRelationshipRole(role: RelationshipRole): RelationshipRole {
@@ -4093,21 +4126,43 @@ export default class KplexPlugin extends Plugin {
   ontologyRoleForField(field: string): OntologyAssignmentRole | null {
     const normalized = normalizeFieldName(field);
     const h = this.settings.hierarchy;
-    const has = (items: string[]) => items.some((item) => normalizeFieldName(item) === normalized);
-    if (has(h.hidden)) return "hidden";
-    if (has(h.parents)) return "parent";
-    if (has(h.children)) return "child";
-    if (has(h.leftFriends)) return "left";
-    if (has(h.rightFriends)) return "right";
-    if (has(h.previous)) return "previous";
-    if (has(h.next)) return "next";
-    if (has(h.exclusions)) return "excluded";
+    const groups: Array<[string[], OntologyAssignmentRole]> = [
+      [h.hidden, "hidden"],
+      [h.parents, "parent"],
+      [h.children, "child"],
+      [h.leftFriends, "left"],
+      [h.rightFriends, "right"],
+      [h.previous, "previous"],
+      [h.next, "next"],
+      [h.exclusions, "excluded"],
+    ];
+    for (const [items, role] of groups) {
+      for (const entry of items) {
+        const mapping = parseHierarchyFieldMapping(entry);
+        if (mapping.normalizedForward === normalized) return role;
+        if (mapping.inverse && mapping.normalizedInverse === normalized) {
+          const opposite = oppositeOntologyRole(role as EvidenceRole);
+          if (opposite) return opposite;
+        }
+      }
+    }
     return null;
   }
 
   inverseOntologyField(field: string, semanticRole: RelationshipRole): string {
-    const group = this.ontologyRoleForField(field);
+    const normalized = normalizeFieldName(field);
     const h = this.settings.hierarchy;
+    const lists = [h.parents, h.children, h.previous, h.next, h.leftFriends, h.rightFriends];
+    for (const list of lists) {
+      for (const entry of list) {
+        const mapping = parseHierarchyFieldMapping(entry);
+        if (mapping.inverse) {
+          if (mapping.normalizedForward === normalized) return mapping.inverse;
+          if (mapping.normalizedInverse === normalized) return mapping.forward;
+        }
+      }
+    }
+    const group = this.ontologyRoleForField(field);
     switch (group) {
       case "parent": return this.defaultOntologyField("child");
       case "child": return this.defaultOntologyField("parent");
@@ -4182,7 +4237,21 @@ export default class KplexPlugin extends Plugin {
 
   private allOntologyFields(): string[] {
     const h = this.settings.hierarchy;
-    return [...h.parents, ...h.children, ...h.leftFriends, ...h.rightFriends, ...h.previous, ...h.next];
+    const raw = [...h.parents, ...h.children, ...h.leftFriends, ...h.rightFriends, ...h.previous, ...h.next];
+    const result: string[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      const mapping = parseHierarchyFieldMapping(item);
+      if (!seen.has(mapping.normalizedForward)) {
+        seen.add(mapping.normalizedForward);
+        result.push(mapping.forward);
+      }
+      if (mapping.inverse && mapping.normalizedInverse && !seen.has(mapping.normalizedInverse)) {
+        seen.add(mapping.normalizedInverse);
+        result.push(mapping.inverse);
+      }
+    }
+    return result;
   }
 
   /** Collect vault/index counts on demand for the About vault dialog without changing graph state. */

@@ -31,6 +31,8 @@ import {
 } from "obsidian";
 import type KplexPlugin from "./main";
 import type { Arrowhead, Hierarchy, LinkStyle, NodeStyle, Role } from "./types";
+import { parseHierarchyFieldMapping } from "./core/contracts/fieldName";
+import { oppositeOntologyRole, type EvidenceRole } from "./core/graph/evidence";
 import { sanitizeGraphLensDefinitions, type GraphLensDefinition } from "./lens/GraphLens";
 import { collectionWindow } from "./ui/components/collectionWindow";
 import { createObsidianTranslator } from "./adapters/obsidian/localization";
@@ -1884,16 +1886,24 @@ export class KplexSettingTab extends PluginSettingTab {
       ["next", this.kplexPlugin.settings.hierarchy.next],
     ];
     const fields = new Map<string, OntologyStyleField>();
+    const registerField = (name: string, role: Role) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const key = normalizeOntologyStyleKey(trimmed);
+      const current = fields.get(key);
+      if (current) {
+        if (!current.roles.includes(role)) current.roles.push(role);
+      } else {
+        fields.set(key, { name: trimmed, roles: [role] });
+      }
+    };
     for (const [role, names] of roleGroups) {
       for (const rawName of names) {
-        const name = rawName.trim();
-        if (!name) continue;
-        const key = normalizeOntologyStyleKey(name);
-        const current = fields.get(key);
-        if (current) {
-          if (!current.roles.includes(role)) current.roles.push(role);
-        } else {
-          fields.set(key, { name, roles: [role] });
+        const mapping = parseHierarchyFieldMapping(rawName);
+        registerField(mapping.forward, role);
+        if (mapping.inverse) {
+          const opposite = oppositeOntologyRole(role as EvidenceRole);
+          if (opposite) registerField(mapping.inverse, opposite as Role);
         }
       }
     }
