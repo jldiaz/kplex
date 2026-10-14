@@ -25,7 +25,7 @@ const temp = mkdtempSync(join(tmpdir(), "kplex-index-test-"));
 // managed leaf, so the implementation must never adopt an arbitrary adjacent/pinned user tab.
 const mainSource = readFileSync(join(root, "src/main.ts"), "utf8");
 
-const appSource = readFileSync(join(root, "src/ui/App.tsx"), "utf8");
+const appSource = readFileSync(join(root, "src/ui/App.tsx"), "utf8").replace(/\r\n/g, "\n");
 const newRelatedSource = readFileSync(join(root, "src/ui/NewRelatedNoteModal.ts"), "utf8");
 const draggableDialogSource = readFileSync(join(root, "src/ui/components/DraggableDialog.ts"), "utf8");
 const ghostModalSource = readFileSync(join(root, "src/ui/MaterializeGhostModal.ts"), "utf8");
@@ -2818,6 +2818,13 @@ try {
   expandedHas(urls.neighborhood, "parent", "https://source.com/ontology-inline", RelationType.DEFINED);
   expandedHas(urls.neighborhood, "child", "https://source.com/inferred", RelationType.INFERRED);
   expandedHas(urls.neighborhood, "child", "https://youtu.be/excalibrain-fixture-video", RelationType.INFERRED);
+
+  const projectedA = projectCentralSectionExpansion(plugin, index, expandedA);
+  const projFriends = projectedA.sections.find((section) => section.page.name === "Friend and challenger cases");
+  const projConflict = projectedA.sections.find((section) => section.page.name === "Inference and conflict cases");
+  assert(projFriends && projConflict);
+  expandedHas(projFriends.neighborhood, "child", "Note Y.md", RelationType.INFERRED);
+  expandedHas(projConflict.neighborhood, "child", "Note F.md", RelationType.INFERRED);
 
   // Git may check this fixture out with CRLF on Windows. Both newline conventions must retain
   // the same section relationships and physical heading ranges without weakening accepted goldens.

@@ -423,37 +423,32 @@ export async function buildCentralSectionExpansion(
   };
 }
 
-/** Rebind current persistent evidence to cached heading ranges without rereading the Markdown body. */
+/**
+ * Preserves the section-partitioned evidence compiled during expansion while refreshing current
+ * target page references from the index.
+ *
+ * Ordinary Markdown links and unresolved targets lack line numbers in persistent index evidence,
+ * so their heading assignment is established during body parsing in `buildCentralSectionExpansion`
+ * and must be retained rather than discarded during projection.
+ */
 function currentSectionEvidence(index: GraphIndex, source: SectionProjectionSource): Readonly<{
   center: EvidenceTargetMap; sections: ReadonlyMap<string, EvidenceTargetMap>;
 }> {
   const center = new Map<string, { target: GraphPage; evidence: RelationEvidence[] }>();
-  const sections = new Map<string, EvidenceTargetMap>(source.sections.map((section) => [section.id, new Map()]));
-  const ordered = source.sections
-    .map((section) => ({ section, line: section.page.transient?.line ?? Number.MAX_SAFE_INTEGER }))
-    .sort((a, b) => a.line - b.line);
-  const sectionAt = (line: number): SectionProjectionSource["sections"][number] | null => {
-    let found: SectionProjectionSource["sections"][number] | null = null;
-    for (const candidate of ordered) {
-      if (candidate.line > line) break;
-      found = candidate.section;
+  for (const [key, entry] of source.centerEvidence) {
+    const actual = index.get(entry.target.path) ?? entry.target;
+    center.set(key, { target: actual, evidence: [...entry.evidence] });
+  }
+  const sections = new Map<string, EvidenceTargetMap>();
+  for (const raw of source.sections) {
+    const sectionMap: EvidenceTargetMap = new Map();
+    for (const [key, entry] of raw.evidenceByTarget) {
+      const actualPath = entry.target.transient?.actualPath ?? entry.target.path;
+      const actual = index.get(actualPath) ?? entry.target;
+      const target = sectionTarget(actual, raw.id);
+      sectionMap.set(key, { target, evidence: [...entry.evidence] });
     }
-    return found;
-  };
-
-  for (const entry of index.evidenceFrom(source.centerPage.path)) {
-    const actual = index.get(entry.targetPath);
-    if (!actual) continue;
-    for (const item of entry.evidence) {
-      const bodyOwned = item.declaredByPath === source.centerPage.path
-        && (item.sourceKind === "inline-ontology" || item.sourceKind === "body-url" || (item.sourceKind === "property-url" && typeof item.line === "number")
-          || item.sourceKind === "obsidian-link" || item.sourceKind === "unresolved-link");
-      const section = bodyOwned && typeof item.line === "number" ? sectionAt(item.line) : null;
-      if (!section) { addEvidence(center, actual, item); continue; }
-      const target = sectionTarget(actual, section.id);
-      const projected: RelationEvidence = { ...item, sourcePath: section.page.path, targetPath: target.path };
-      addEvidence(sections.get(section.id)!, target, projected);
-    }
+    sections.set(raw.id, sectionMap);
   }
   return { center, sections };
 }
