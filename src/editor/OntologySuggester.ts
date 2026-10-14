@@ -14,6 +14,7 @@ import {
 } from "obsidian";
 import type KplexPlugin from "../main";
 import type { RelationshipRole } from "../types";
+import { ontologyFieldsForHierarchyRole } from "../core/contracts/fieldName";
 
 /**
  * Match the legacy optional greedy whitespace prefix and terminal non-whitespace/non-colon query
@@ -109,17 +110,22 @@ export class OntologySuggester extends EditorSuggest<string> {
       previous: "previous",
       next: "next",
     };
+    const getFields = (role: RelationshipRole): string[] =>
+      typeof this.plugin.ontologyFieldsForRole === "function"
+        ? this.plugin.ontologyFieldsForRole(role)
+        : ontologyFieldsForHierarchyRole(h, role);
+
     if (this.suggestType !== "all") {
-      return this.plugin.ontologyFieldsForRole(roleForType[this.suggestType]);
+      return getFields(roleForType[this.suggestType]);
     }
     const all = [
       ...h.hidden,
-      ...this.plugin.ontologyFieldsForRole("parent"),
-      ...this.plugin.ontologyFieldsForRole("child"),
-      ...this.plugin.ontologyFieldsForRole("left"),
-      ...this.plugin.ontologyFieldsForRole("right"),
-      ...this.plugin.ontologyFieldsForRole("previous"),
-      ...this.plugin.ontologyFieldsForRole("next"),
+      ...getFields("parent"),
+      ...getFields("child"),
+      ...getFields("left"),
+      ...getFields("right"),
+      ...getFields("previous"),
+      ...getFields("next"),
       this.plugin.settings.primaryTagField,
     ];
     return [...new Set(all)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));

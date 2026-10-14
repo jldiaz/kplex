@@ -78,6 +78,32 @@ export function resolveNodeStyle(page: GraphPage, relation: Neighbour | null, ro
   };
 }
 
+// Cache the counterpart/entry aliases for hierarchy definitions to avoid reparsing lists per connector.
+const hierarchyStyleAliasesCache = new WeakMap<object, Map<string, string[]>>();
+
+function getHierarchyStyleAliases(hierarchy: object, settings: KplexSettings): Map<string, string[]> {
+  const cached = hierarchyStyleAliasesCache.get(hierarchy);
+  if (cached) return cached;
+  const aliases = new Map<string, string[]>();
+  const h = settings.hierarchy;
+  if (h) {
+    const lists = [h.parents, h.children, h.previous, h.next, h.leftFriends, h.rightFriends];
+    for (const list of lists) {
+      if (!list) continue;
+      for (const entry of list) {
+        const mapping = parseHierarchyFieldMapping(entry);
+        if (mapping.inverse && mapping.normalizedInverse) {
+          const entryNorm = entry.toLowerCase().replaceAll(" ", "-");
+          aliases.set(mapping.normalizedForward, [mapping.inverse, mapping.normalizedInverse, entry, entryNorm]);
+          aliases.set(mapping.normalizedInverse, [mapping.forward, mapping.normalizedForward, entry, entryNorm]);
+        }
+      }
+    }
+  }
+  hierarchyStyleAliasesCache.set(hierarchy, aliases);
+  return aliases;
+}
+
 /** Layer connector overrides, preserving exact and normalized imported ontology-key precedence. */
 export function resolveLinkStyle(neighbour: Neighbour, settings: KplexSettings): LinkStyle {
   let layered: LinkStyle = {};
@@ -94,29 +120,15 @@ export function resolveLinkStyle(neighbour: Neighbour, settings: KplexSettings):
     let style = settings.hierarchyLinkStyles[definition] ?? settings.hierarchyLinkStyles[normalized]
       ?? (importedKey ? settings.hierarchyLinkStyles[importedKey] : undefined);
     if (!style && settings.hierarchy) {
-      const h = settings.hierarchy;
-      const lists = [h.parents, h.children, h.previous, h.next, h.leftFriends, h.rightFriends];
-      for (const list of lists) {
-        if (!list) continue;
-        for (const entry of list) {
-          const mapping = parseHierarchyFieldMapping(entry);
-          if (mapping.inverse) {
-            if (mapping.normalizedForward === normalized) {
-              style = settings.hierarchyLinkStyles[mapping.inverse]
-                ?? settings.hierarchyLinkStyles[mapping.normalizedInverse!]
-                ?? settings.hierarchyLinkStyles[entry]
-                ?? settings.hierarchyLinkStyles[entry.toLowerCase().replaceAll(" ", "-")];
-              if (style) break;
-            } else if (mapping.normalizedInverse === normalized) {
-              style = settings.hierarchyLinkStyles[mapping.forward]
-                ?? settings.hierarchyLinkStyles[mapping.normalizedForward]
-                ?? settings.hierarchyLinkStyles[entry]
-                ?? settings.hierarchyLinkStyles[entry.toLowerCase().replaceAll(" ", "-")];
-              if (style) break;
-            }
+      const aliasCandidates = getHierarchyStyleAliases(settings.hierarchy, settings).get(normalized);
+      if (aliasCandidates) {
+        for (const candidate of aliasCandidates) {
+          const candidateStyle = settings.hierarchyLinkStyles[candidate];
+          if (candidateStyle) {
+            style = candidateStyle;
+            break;
           }
         }
-        if (style) break;
       }
     }
     layered = {

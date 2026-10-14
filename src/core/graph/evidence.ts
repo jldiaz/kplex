@@ -97,8 +97,8 @@ export function oppositeOntologyRole(role: EvidenceRole): EvidenceRole | null {
     case "child": return "parent";
     case "previous": return "next";
     case "next": return "previous";
-    case "left": return "right";
-    case "right": return "left";
+    case "left": return "left";
+    case "right": return "right";
     case "hidden": return null;
   }
 }

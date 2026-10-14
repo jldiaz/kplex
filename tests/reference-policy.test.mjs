@@ -299,7 +299,7 @@ test("unassigned property URLs infer with raw provenance, configured roles and r
   assert.deepEqual(declarations(patch.patch.compilation), declarations(inferred), "full and patch share the URL default and hierarchy owner");
 });
 
-test("parseHierarchyFieldMapping parses forward and inverse slash syntax", () => {
+test("parseHierarchyFieldMapping parses forward and inverse slash syntax with escape and boundary safety", () => {
   const mapping1 = c.parseHierarchyFieldMapping("replies to/replied by");
   assert.equal(mapping1.forward, "replies to");
   assert.equal(mapping1.normalizedForward, "replies-to");
@@ -317,6 +317,78 @@ test("parseHierarchyFieldMapping parses forward and inverse slash syntax", () =>
   assert.equal(mapping3.normalizedForward, "parent");
   assert.equal(mapping3.inverse, undefined);
   assert.equal(mapping3.normalizedInverse, undefined);
+
+  // Escaped slashes: a\/b treated as literal name a/b
+  const mappingEscaped = c.parseHierarchyFieldMapping("replaces\\/supersedes");
+  assert.equal(mappingEscaped.forward, "replaces/supersedes");
+  assert.equal(mappingEscaped.normalizedForward, "replaces/supersedes");
+  assert.equal(mappingEscaped.inverse, undefined);
+
+  // Consecutive slashes: a//b treated as literal single token
+  const mappingDoubleSlash = c.parseHierarchyFieldMapping("replaces//supersedes");
+  assert.equal(mappingDoubleSlash.forward, "replaces//supersedes");
+  assert.equal(mappingDoubleSlash.inverse, undefined);
+
+  // Multiple slashes: a/b/c treated as literal single token
+  const mappingMultiSlash = c.parseHierarchyFieldMapping("a/b/c");
+  assert.equal(mappingMultiSlash.forward, "a/b/c");
+  assert.equal(mappingMultiSlash.inverse, undefined);
+
+  // Leading or trailing slashes: /a or a/ treated as literal
+  const mappingLeading = c.parseHierarchyFieldMapping("/leading");
+  assert.equal(mappingLeading.forward, "/leading");
+  assert.equal(mappingLeading.inverse, undefined);
+
+  const mappingTrailing = c.parseHierarchyFieldMapping("trailing/");
+  assert.equal(mappingTrailing.forward, "trailing/");
+  assert.equal(mappingTrailing.inverse, undefined);
+});
+
+test("reassignFieldInHierarchy preserves reciprocal half or moves full pair without data loss", () => {
+  const makeHierarchy = () => ({
+    hidden: [],
+    parents: ["super/sub"],
+    children: [],
+    leftFriends: ["friend/ally"],
+    rightFriends: [],
+    previous: ["replies to/replied by", "before"],
+    next: ["after"],
+  });
+
+  // 1. Reassigning forward half of a pair: "replies to" from previous -> parents
+  // Should move "replies to" to parents, and preserve inverse "replied by" in next (the reciprocal role of previous).
+  const h1 = makeHierarchy();
+  const updated1 = c.reassignFieldInHierarchy(h1, "replies to", "parents");
+  assert.deepEqual(updated1.parents, ["replies to", "super/sub"]);
+  assert.deepEqual(updated1.previous, ["before"]);
+  assert.deepEqual(updated1.next, ["after", "replied by"]);
+
+  // 2. Reassigning inverse half of a pair: "sub" from parents -> next
+  // In "super/sub", forward was in parents so inverse "sub" belonged reciprocally to children.
+  // When "sub" is moved to next, "super" should be preserved in parents.
+  const h2 = makeHierarchy();
+  const updated2 = c.reassignFieldInHierarchy(h2, "sub", "next");
+  assert.deepEqual(updated2.parents, ["super"]);
+  assert.deepEqual(updated2.next, ["after", "sub"]);
+
+  // 3. Reassigning full pair: "replies to/replied by" -> leftFriends
+  const h3 = makeHierarchy();
+  const updated3 = c.reassignFieldInHierarchy(h3, "replies to/replied by", "leftFriends");
+  assert.deepEqual(updated3.leftFriends, ["friend/ally", "replies to/replied by"]);
+  assert.deepEqual(updated3.previous, ["before"]);
+
+  // 4. Reassigning single field: "before" -> children
+  const h4 = makeHierarchy();
+  const updated4 = c.reassignFieldInHierarchy(h4, "before", "children");
+  assert.deepEqual(updated4.previous, ["replies to/replied by"]);
+  assert.deepEqual(updated4.children, ["before"]);
+
+  // 5. Symmetric friend pair reassignment: "friend" in leftFriends moved to rightFriends
+  // In leftFriends, reciprocal role is leftFriends. "ally" should remain in leftFriends.
+  const h5 = makeHierarchy();
+  const updated5 = c.reassignFieldInHierarchy(h5, "friend", "rightFriends");
+  assert.deepEqual(updated5.leftFriends, ["ally"]);
+  assert.deepEqual(updated5.rightFriends, ["friend"]);
 });
 
 test("slash syntax defines forward and inverse names for ontology categories and places reverse links in opposite roles with reverse labels", async () => {

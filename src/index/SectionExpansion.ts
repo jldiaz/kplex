@@ -7,10 +7,10 @@
 import type { App, CachedMetadata } from "obsidian";
 import type KplexPlugin from "../main";
 import { LinkDirection, RelationType, type GraphPage, type Neighbour, type Neighborhood, type Relation, type Role } from "../types";
-import { normalizeFieldName, type ParsedBodyMetadata } from "../core/parser/metadata";
+import { normalizeFieldName, parseHierarchyFieldMapping, type ParsedBodyMetadata } from "../core/parser/metadata";
 import { extractLinksFromValue, parseBodyMetadataCooperative } from "./fieldParser";
 import type { GraphIndex } from "./GraphIndex";
-import { applyEvidenceDecisionsToRelation, applyOntologyPrecedence, emptyRelation, type EvidenceRole, type RelationEvidence } from "./RelationEvidence";
+import { applyEvidenceDecisionsToRelation, applyOntologyPrecedence, emptyRelation, oppositeOntologyRole, type EvidenceRole, type RelationEvidence } from "./RelationEvidence";
 import { classifyRelation, explainResolvedRelationship, type RelationshipExplanation } from "./RelationResolver";
 import { canonicalWebUrl } from "../adapters/obsidian/urlIdentity";
 
@@ -114,17 +114,53 @@ function scanHeadings(content: string): HeadingRange[] {
 }
 
 function ontologyRole(plugin: KplexPlugin, name: string): EvidenceRole | null {
+  if (typeof plugin.ontologyRoleForField === "function") {
+    const role = plugin.ontologyRoleForField(name);
+    if (!role || role === "excluded") return null;
+    return role as EvidenceRole;
+  }
   const normalized = normalizeFieldName(name);
-  const h = plugin.settings.hierarchy;
-  const includes = (values: string[]) => values.some((value) => normalizeFieldName(value) === normalized);
-  if (includes(h.hidden)) return "hidden";
-  if (includes(h.parents)) return "parent";
-  if (includes(h.children)) return "child";
-  if (includes(h.leftFriends)) return "left";
-  if (includes(h.rightFriends)) return "right";
-  if (includes(h.previous)) return "previous";
-  if (includes(h.next)) return "next";
+  const h = plugin.settings?.hierarchy;
+  if (!h) return null;
+  const groups: Array<[string[] | undefined, EvidenceRole]> = [
+    [h.parents, "parent"],
+    [h.children, "child"],
+    [h.leftFriends, "left"],
+    [h.rightFriends, "right"],
+    [h.previous, "previous"],
+    [h.next, "next"],
+  ];
+  for (const [items, role] of groups) {
+    for (const entry of items ?? []) {
+      const mapping = parseHierarchyFieldMapping(entry);
+      if (mapping.normalizedForward === normalized) return role;
+      if (mapping.inverse && mapping.normalizedInverse === normalized) {
+        const opposite = oppositeOntologyRole(role);
+        if (opposite) return opposite;
+      }
+    }
+  }
   return null;
+}
+
+function inverseField(plugin: KplexPlugin, name: string, role: EvidenceRole): string {
+  if (typeof plugin.inverseOntologyField === "function") {
+    return plugin.inverseOntologyField(name, role === "hidden" ? "left" : role);
+  }
+  const normalized = normalizeFieldName(name);
+  const h = plugin.settings?.hierarchy;
+  if (!h) return name;
+  const lists = [h.parents, h.children, h.previous, h.next, h.leftFriends, h.rightFriends];
+  for (const list of lists) {
+    for (const entry of list ?? []) {
+      const mapping = parseHierarchyFieldMapping(entry);
+      if (mapping.inverse) {
+        if (mapping.normalizedForward === normalized) return mapping.inverse;
+        if (mapping.normalizedInverse === normalized) return mapping.forward;
+      }
+    }
+  }
+  return name;
 }
 
 function inferredRole(plugin: KplexPlugin): Exclude<EvidenceRole, "hidden"> {
@@ -151,6 +187,9 @@ function evidence(
     definition: extra.definition,
     fieldName: extra.fieldName,
     rawValue: extra.rawValue,
+    inverseDefinition: extra.inverseDefinition,
+    inverseFieldName: extra.inverseFieldName,
+    inverseRole: extra.inverseRole,
     line: extra.line,
     start: extra.start,
     end: extra.end,
@@ -356,6 +395,9 @@ export async function buildCentralSectionExpansion(
     for (const occurrence of parsed.inlineFieldOccurrences) {
       const role = ontologyRole(plugin, occurrence.name);
       if (!role) continue;
+      const inverseName = inverseField(plugin, occurrence.name, role === "hidden" ? "left" : role);
+      const hasExplicitInverse = inverseName !== occurrence.name;
+      const oppositeRole = role !== "hidden" ? oppositeOntologyRole(role) : null;
       for (const actualPath of extractLinksFromValue(plugin.app, occurrence.value, file)) {
         const actual = index.get(actualPath);
         if (!actual) continue;
@@ -363,7 +405,12 @@ export async function buildCentralSectionExpansion(
         addEvidence(byTarget, target, evidence(`section-${heading.id}-ontology-${counter++}`, sectionPath, target.path, role, RelationType.DEFINED, "inline-ontology", centerPage.path, {
           declaredTargetPath: actual.path,
           declaredRole: role,
-          definition: normalizeFieldName(occurrence.name), fieldName: occurrence.name, rawValue: occurrence.value,
+          definition: normalizeFieldName(occurrence.name),
+          fieldName: occurrence.name,
+          rawValue: occurrence.value,
+          inverseDefinition: hasExplicitInverse ? normalizeFieldName(inverseName) : undefined,
+          inverseFieldName: hasExplicitInverse ? inverseName : undefined,
+          inverseRole: hasExplicitInverse && oppositeRole ? oppositeRole : undefined,
           line: heading.line + occurrence.line - 1, start: heading.start + occurrence.start, end: heading.start + occurrence.end,
         }));
       }
