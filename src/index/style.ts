@@ -5,6 +5,7 @@
 import type { KplexSettings } from "../settings";
 import type { GraphPage, LinkStyle, Neighbour, NodeStyle, Role } from "../types";
 import { RelationType } from "../types";
+import { parseHierarchyFieldMapping } from "../core/contracts/fieldName";
 
 export const alphaHexToCss = (color?: string, fallback = "transparent"): string => {
   if (!color) return fallback;
@@ -77,6 +78,32 @@ export function resolveNodeStyle(page: GraphPage, relation: Neighbour | null, ro
   };
 }
 
+// Cache the counterpart/entry aliases for hierarchy definitions to avoid reparsing lists per connector.
+const hierarchyStyleAliasesCache = new WeakMap<object, Map<string, string[]>>();
+
+function getHierarchyStyleAliases(hierarchy: object, settings: KplexSettings): Map<string, string[]> {
+  const cached = hierarchyStyleAliasesCache.get(hierarchy);
+  if (cached) return cached;
+  const aliases = new Map<string, string[]>();
+  const h = settings.hierarchy;
+  if (h) {
+    const lists = [h.parents, h.children, h.previous, h.next, h.leftFriends, h.rightFriends];
+    for (const list of lists) {
+      if (!list) continue;
+      for (const entry of list) {
+        const mapping = parseHierarchyFieldMapping(entry);
+        if (mapping.inverse && mapping.normalizedInverse) {
+          const entryNorm = entry.toLowerCase().replaceAll(" ", "-");
+          aliases.set(mapping.normalizedForward, [mapping.inverse, mapping.normalizedInverse, entry, entryNorm]);
+          aliases.set(mapping.normalizedInverse, [mapping.forward, mapping.normalizedForward, entry, entryNorm]);
+        }
+      }
+    }
+  }
+  hierarchyStyleAliasesCache.set(hierarchy, aliases);
+  return aliases;
+}
+
 /** Layer connector overrides, preserving exact and normalized imported ontology-key precedence. */
 export function resolveLinkStyle(neighbour: Neighbour, settings: KplexSettings): LinkStyle {
   let layered: LinkStyle = {};
@@ -90,10 +117,23 @@ export function resolveLinkStyle(neighbour: Neighbour, settings: KplexSettings):
     const importedKey = settings.hierarchyLinkStyles[definition] || settings.hierarchyLinkStyles[normalized]
       ? undefined
       : Object.keys(settings.hierarchyLinkStyles).find((key) => key.toLowerCase().replaceAll(" ", "-") === normalized);
+    let style = settings.hierarchyLinkStyles[definition] ?? settings.hierarchyLinkStyles[normalized]
+      ?? (importedKey ? settings.hierarchyLinkStyles[importedKey] : undefined);
+    if (!style && settings.hierarchy) {
+      const aliasCandidates = getHierarchyStyleAliases(settings.hierarchy, settings).get(normalized);
+      if (aliasCandidates) {
+        for (const candidate of aliasCandidates) {
+          const candidateStyle = settings.hierarchyLinkStyles[candidate];
+          if (candidateStyle) {
+            style = candidateStyle;
+            break;
+          }
+        }
+      }
+    }
     layered = {
       ...layered,
-      ...(settings.hierarchyLinkStyles[definition] ?? settings.hierarchyLinkStyles[normalized]
-        ?? (importedKey ? settings.hierarchyLinkStyles[importedKey] : undefined) ?? {})
+      ...(style ?? {})
     };
   }
   return {

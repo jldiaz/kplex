@@ -2958,6 +2958,31 @@ try {
   expectRole("Note A.md", "child", "Note F.md", RelationType.INFERRED);
   assert.equal(index.get(friends.page.path), undefined);
 
+  // Assertions on Section Expansion with forward and inverse slash syntax.
+  plugin.settings.hierarchy.previous.push("replies to/replied by");
+  const noteABodyWithSlash = contents.get("Note A.md") + "\n\n## Slash Discussion\nreplies to:: [[Note B]]\nreplied by:: [[Note C]]\n";
+  contents.set("Note A.md", noteABodyWithSlash);
+  try {
+    const slashExpansion = await buildCentralSectionExpansion(plugin, index, index.get("Note A.md"));
+    assert(slashExpansion, "Expected slash expansion for Note A");
+    const slashSection = slashExpansion.sections.find((s) => s.page.name === "Slash Discussion");
+    assert(slashSection, "Slash Discussion section found");
+    // Forward "replies to" -> role previous -> placed in leftFriends bucket
+    expandedHas(slashSection.neighborhood, "left", "Note B.md", RelationType.DEFINED);
+    // Inverse "replied by" -> role next -> placed in rightFriends bucket
+    expandedHas(slashSection.neighborhood, "right", "Note C.md", RelationType.DEFINED);
+    // Verify explicit reciprocal metadata is attached to the decisions
+    const bTarget = slashSection.neighborhood.leftFriends.find((item) => (item.page.transient?.actualPath ?? item.page.path) === "Note B.md");
+    const cTarget = slashSection.neighborhood.rightFriends.find((item) => (item.page.transient?.actualPath ?? item.page.path) === "Note C.md");
+    const explainB = slashExpansion.explanations.get(`${slashSection.page.path}\u0000${bTarget.page.path}`);
+    const explainC = slashExpansion.explanations.get(`${slashSection.page.path}\u0000${cTarget.page.path}`);
+    assert(explainB?.decisions.some((d) => d.evidence.inverseFieldName === "replied by" && d.evidence.inverseRole === "next"));
+    assert(explainC?.decisions.some((d) => d.evidence.inverseFieldName === "replies to" && d.evidence.inverseRole === "previous"));
+  } finally {
+    contents.set("Note A.md", originalSectionBody);
+    plugin.settings.hierarchy.previous = plugin.settings.hierarchy.previous.filter((f) => f !== "replies to/replied by");
+  }
+
   // Assertions 43–47: nested headings form a runtime outline tree. This is the structural input
   // used by the fold/unfold renderer; it must not create persistent section identities.
   const sectionTree = await buildCentralSectionExpansion(plugin, index, index.get("Section Tree.md"));
@@ -3185,7 +3210,9 @@ try {
       const original = owner[method];
       owner[method] = async (...args) => { await blocked; return original.apply(owner, args); };
       const start = stalled.restoreIndexedDbSnapshot(["Note A.md"]);
-      await settle();
+      for (let n = 0; n < 20 && stalled.getSnapshotHydrationDiagnostics().phase !== phase; n++) {
+        await settle();
+      }
       assert.equal(stalled.getSnapshotHydrationDiagnostics().phase, phase);
       if (phase === "source-authority") {
         await advanceWatchdog(60000);

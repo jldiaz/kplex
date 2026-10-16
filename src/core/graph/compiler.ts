@@ -500,6 +500,9 @@ export class NormalizedGraphCompiler {
         // The accepted evidence oracle uses configured frontmatter labels but actual inline spelling.
         // The neutral value header separately preserves the exact physical frontmatter key.
         fieldName: value.surface === "frontmatter" ? assignment.configuredFieldName : value.fieldName,
+        ...(assignment.inverseNormalizedFieldName ? { inverseDefinition: assignment.inverseNormalizedFieldName } : {}),
+        ...(assignment.inverseConfiguredFieldName ? { inverseFieldName: assignment.inverseConfiguredFieldName } : {}),
+        ...(assignment.inverseRole ? { inverseRole: assignment.inverseRole } : {}),
         ...(record.rawValue === undefined ? {} : { rawValue: record.rawValue }),
         ...(location?.line === undefined ? {} : { line: location.line }),
         ...(location?.start === undefined ? {} : { start: location.start }),
