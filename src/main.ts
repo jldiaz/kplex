@@ -4148,7 +4148,7 @@ export default class KplexPlugin extends Plugin {
     let hierarchyChanged = false;
 
     if (!existing) {
-      reassignFieldInHierarchy(this.settings.hierarchy, trimmed, role as OntologyAssignmentRole);
+      reassignFieldInHierarchy(this.settings.hierarchy, trimmed, role);
       canonical = trimmed;
       hierarchyChanged = true;
     }

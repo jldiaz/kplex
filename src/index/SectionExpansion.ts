@@ -127,7 +127,7 @@ function ontologyRole(plugin: KplexPlugin, name: string): EvidenceRole | null {
   if (typeof plugin.ontologyRoleForField === "function") {
     const role = plugin.ontologyRoleForField(name);
     if (!role || role === "excluded") return null;
-    return role as EvidenceRole;
+    return role;
   }
   const normalized = normalizeFieldName(name);
   const h = plugin.settings?.hierarchy;
