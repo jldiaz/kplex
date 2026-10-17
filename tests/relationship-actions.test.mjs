@@ -15,9 +15,9 @@ import ts from "typescript";
 // The real convergence adapter is exercised with host events, not replaced by an immediate success.
 const metadataTemp = mkdtempSync(join(tmpdir(), "kplex-created-metadata-"));
 process.on("exit", () => rmSync(metadataTemp, { recursive: true, force: true }));
-await build({ stdin: { contents: 'export * from "./src/adapters/obsidian/relationshipMetadataWrite"; export { normalizeFieldName } from "./src/core/contracts/fieldName"; export { captureSurfaceContinuation } from "./src/ui/surfaceContinuation"; export { createTranslator } from "./src/lang/index";', resolveDir: fileURLToPath(new URL("..", import.meta.url)) },
+await build({ stdin: { contents: 'export * from "./src/adapters/obsidian/relationshipMetadataWrite"; export { normalizeFieldName,parseHierarchyFieldMapping,reassignFieldInHierarchy,ontologyFieldsForHierarchyRole } from "./src/core/contracts/fieldName"; export {oppositeOntologyRole} from "./src/core/graph/evidence"; export {ReferencePolicySelector} from "./src/core/graph/sourcePolicy"; export { captureSurfaceContinuation } from "./src/ui/surfaceContinuation"; export { createTranslator } from "./src/lang/index";', resolveDir: fileURLToPath(new URL("..", import.meta.url)) },
   outfile: join(metadataTemp, "observer.mjs"), bundle: true, platform: "node", format: "esm" });
-const { writeRelationshipMetadata, SavedRelationshipPendingError: ActualSavedPendingError, normalizeFieldName: actualNormalizeFieldName, captureSurfaceContinuation, createTranslator }
+const { writeRelationshipMetadata, SavedRelationshipPendingError: ActualSavedPendingError, normalizeFieldName: actualNormalizeFieldName, parseHierarchyFieldMapping, reassignFieldInHierarchy, ontologyFieldsForHierarchyRole, oppositeOntologyRole, ReferencePolicySelector, captureSurfaceContinuation, createTranslator }
   = await import(pathToFileURL(join(metadataTemp, "observer.mjs")));
 
 /** Compile a production callback/method; class-field arrows capture the supplied owning instance. */
@@ -39,6 +39,36 @@ function productionFunction(path, name, dependencies) {
 
 /** Minimal Markdown-backed graph page retaining exact endpoint paths and canonical identity. */
 function page(path) { return { path, file: { path, extension: "md" }, neighbours: new Map() }; }
+
+test("actual physical-field assignment and remembered writes escape new slash names without creating reciprocal pairs",async()=>{
+  const source=ts.createSourceFile('main.ts',readFileSync(new URL('../src/main.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);
+  const names=new Set(['assignFieldToOntology','rememberRelationshipOntology','ontologyFieldsForRole','ontologyRoleForField']);
+  const owner=source.statements.find(node=>ts.isClassDeclaration(node)&&node.name?.text==='KplexPlugin');
+  const methods=owner.members.filter(node=>ts.isMethodDeclaration(node)&&names.has(node.name.getText(source)));
+  assert.equal(methods.length,names.size);
+  const output=ts.transpileModule('class ActualOntologyOwner {'+methods.map(method=>method.getText(source)).join('\n')+'}',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.None}}).outputText;
+  const ActualOwner=Function('normalizeFieldName','parseHierarchyFieldMapping','reassignFieldInHierarchy','ontologyFieldsForHierarchyRole','oppositeOntologyRole',output+';return ActualOntologyOwner;')(
+    actualNormalizeFieldName,parseHierarchyFieldMapping,reassignFieldInHierarchy,ontologyFieldsForHierarchyRole,oppositeOntologyRole);
+  for(const physical of ['a/b',String.raw`a\/b`,'a/b/c'])for(const role of ['parent','previous','hidden'])for(const operation of ['assign','remember']){
+    if(role==='hidden'&&operation==='remember')continue;
+    const instance=new ActualOwner(),saves=[];
+    instance.settings={hierarchy:{hidden:[],parents:[],children:[],leftFriends:[],rightFriends:[],previous:[],next:[],exclusions:[]},relationDefaultFields:{parent:'',previous:''}};
+    instance.saveSettings=async(...args)=>{saves.push(args);};
+    if(operation==='assign')await instance.assignFieldToOntology(physical,role);
+    else assert.equal(await instance.rememberRelationshipOntology(role,physical),physical,'Writer returns the physical name, never its escaped configuration');
+    const group=role==='parent'?'parents':role;
+    assert.deepEqual(instance.settings.hierarchy[group],[role==='hidden'?physical:physical.replaceAll('/','\\/')]);
+    assert.equal(await instance.ontologyRoleForField(physical),role);
+    const assignments=new ReferencePolicySelector(instance.settings).assignmentsForField(physical);
+    assert.equal(assignments.length,1);assert.equal(assignments[0].configuredFieldName,physical);assert.equal(assignments[0].role,role);
+    assert.equal(assignments[0].inverseConfiguredFieldName,undefined,'Physical slashes do not acquire synthetic inverse fields');
+    assert.equal(saves.length,1);
+    if(operation==='remember'){
+      assert.equal(await instance.rememberRelationshipOntology(role,physical),physical);
+      assert.equal(saves.length,1,'Remembering the same physical write field twice is unchanged');
+    }
+  }
+});
 
 /** The actual connector hint quotes field coordinates but leaves role/type and source-kind prose plain. */
 test("connector evidence tooltip shares semantic reference quoting without quoting source-kind descriptions", () => {
@@ -583,7 +613,8 @@ function cameraLayoutEffect(dependencies) {
 test("navigation with autofit disabled recenters without resetting manual scale", () => {
   const camera = { x: 63, y: -44, scale: 1.73 }, calls = [];
   const dependencies = {
-    viewport: { current: { clientWidth: 800, clientHeight: 600, querySelectorAll: () => [], ownerDocument: { defaultView: { matchMedia: () => ({ matches: false }) } } } },
+    compassCenter: {current: null}, compassSync: {current: () => false}, requestCameraFrame: () => {},
+    viewport: { current: { clientWidth: 800, clientHeight: 600, getBoundingClientRect: () => ({left: 0, top: 0}), querySelectorAll: () => [], ownerDocument: { defaultView: { matchMedia: () => ({ matches: false }) } } } },
     sceneMotion: { cancelAll: () => {} }, preserveCameraOnNextLayout: { current: false }, displayResizeLayout: { current: false },
     centralEditorAvailabilityRef: { current: false }, centralEditorAvailable: false, centralEditorSize: null,
     incomingCenter: { current: null }, centralEditorSizeKeyRef: { current: "" }, previousNodeRects: { current: new Map([["prior", {}]]) },
@@ -622,6 +653,7 @@ function createdMetadataFixture({ extension = "md", displayField = "aliases", in
   const context = { app: { vault, metadataCache, fileManager: {
     getNewFileParent: () => ({ path: "/" }),
     processFrontMatter: async (selected, mutate) => {
+      if (selected === origin.file) { const next = { Keep: "Existing property" }; mutate(next); assert.equal(next.Keep, "Existing property"); events.push("native-relation-write"); return; }
       assert.equal(selected, file); const next = structuredClone(frontmatter); mutate(next); frontmatter = next;
       const nextBody = Object.keys(next).length ? JSON.stringify(next) : "";
       if (nextBody !== body) { file.stat.mtime++; file.stat.size = nextBody.length; body = nextBody; }
@@ -631,7 +663,9 @@ function createdMetadataFixture({ extension = "md", displayField = "aliases", in
     pruneManagedMetadataWrites: () => {}, configuredDisplayNameField: () => displayField,
     translator: key => key, validateRelatedNoteName: () => ({ valid: true, existing: null, stem: "Created" }),
     createNewFileInFolder: async () => file,
-    index: { withForegroundPriority: async work => work(), insertCreatedFile: () => target, get: path => path === target.path ? target : origin },
+    index: { withForegroundPriority: async work => work(), insertCreatedFile: () => target, get: path => path === target.path ? target : origin,
+      refreshVisibleHostMetadataPreviews: () => events.push("refresh-host") },
+    referenceForPage: target => `[[${target.path}]]`, valueContainsTarget: () => false,
     prepareRelationshipMutation: async () => {
       assert(cache && JSON.stringify(cache.frontmatter) === JSON.stringify(frontmatter), "Exact pair cannot capture a cache preceding creation writes");
       pairCaptured = true; events.push("capture-pair"); return [origin, target];
@@ -639,7 +673,7 @@ function createdMetadataFixture({ extension = "md", displayField = "aliases", in
     writeRelationship: async () => { assert(pairCaptured); events.push("write-relation"); },
     publishSavedRelationship: async () => events.push("publish-relation"),
   };
-  for (const method of ["mutateCreatedNodeMetadata", "writeCreatedNodeDisplayName", "writeCreatedNodeAlias", "createNewRelatedFileForOrigin", "linkNewRelatedFile"])
+  for (const method of ["mutateCreatedNodeMetadata", "writeCreatedNodeDisplayName", "writeCreatedNodeAlias", "createNewRelatedFileForOrigin", "linkNewRelatedFile", "appendRelationshipReference"])
     context[method] = productionFunction("src/main.ts", method, { writeRelationshipMetadata, normalizeFieldName: actualNormalizeFieldName,
       Notice: class { constructor(message) { notices.push(message); } } }).bind(context);
   return { context, file, origin, writes, events, notices, metadataCache, vault,
@@ -652,7 +686,7 @@ function createdMetadataFixture({ extension = "md", displayField = "aliases", in
 /** Advance only explicit promises; no elapsed-time or quiet-window authority enters these tests. */
 const nextCreatedStep = () => new Promise(resolve => setImmediate(resolve));
 
-for (const kind of ["markdown", "excalidraw"]) test(`${kind} gate creation waits for display and alias cache/body observations before exact linking`, async () => {
+for (const kind of ["markdown", "excalidraw"]) test(`${kind} gate creation waits for display and alias cache/body observations before independent linking`, async () => {
   const f = createdMetadataFixture({ displayField: kind === "markdown" ? "aliases" : "Title" });
   const previousWindow = globalThis.window; globalThis.window = { setTimeout, clearTimeout };
   let operation;
@@ -664,8 +698,9 @@ for (const kind of ["markdown", "excalidraw"]) test(`${kind} gate creation waits
     assert.equal(f.writes.length, 2); assert.equal(finished, false, "A second alias write must receive its own final cache/body observation");
     f.observe(); const file = await operation;
     assert.equal(file, f.file); f.clean();
-    await f.context.linkNewRelatedFile(f.origin, "child", file, "Children", "User alias", "Display title");
-    assert.deepEqual(f.events, ["native-write", "cache-body-observed", "native-write", "cache-body-observed", "capture-pair", "write-relation", "publish-relation"]);
+    const result = await f.context.linkNewRelatedFile(f.origin, "child", file, "Children", "User alias", "Display title");
+    assert.equal(result.state, "saved-pending"); assert.equal(result.page.file, file);
+    assert.deepEqual(f.events, ["native-write", "cache-body-observed", "native-write", "cache-body-observed", "native-relation-write", "refresh-host"]);
   } finally { f.cancel(); await operation?.catch(() => {}); globalThis.window = previousWindow; f.clean(); }
 });
 
@@ -708,7 +743,9 @@ for (const consumer of ["folder", "ghost"]) test(`${consumer} creation also awai
       operation = create.call(f.context, { isFolder: true, path: "folder:Owned" }, "Folder display", "markdown").then(value => { finished = true; return value; });
     } else {
       f.context.rememberNewNodeDefaultType = async kind => f.events.push(["default", kind]);
-      f.context.index.renameFile = (oldPath, file) => { f.events.push(["rename", oldPath, file.path]); return true; };
+      f.context.settings = { lastActivePath: "Other.md" };
+      f.context.remapNavigationPaths = (oldPath, newPath) => { f.events.push(["remap", oldPath, newPath]); return false; };
+      f.context.index.materializeFile = (oldPath, file) => { f.events.push(["materialize", oldPath, file.path]); return true; };
       f.context.openInDocumentLeaf = async file => f.events.push(["open", file.path]);
       const materialize = productionFunction("src/main.ts", "materializeGhostPage", {});
       operation = materialize.call(f.context, { path: "Ghost", name: "Ghost display" }, "Created", "markdown", "").then(value => { finished = true; return value; });
@@ -716,6 +753,62 @@ for (const consumer of ["folder", "ghost"]) test(`${consumer} creation also awai
     await nextCreatedStep(); assert.equal(finished, false); assert.deepEqual(f.events, ["native-write"]);
     f.observe(); const result = await operation; assert(result); f.clean();
     if (consumer === "folder") assert.deepEqual(f.events, ["native-write", "cache-body-observed", ["insert", f.file.path, ["Folder display"]]]);
-    else assert.deepEqual(f.events, ["native-write", "cache-body-observed", ["default", "markdown"], ["rename", "Ghost", f.file.path], ["open", f.file.path]]);
+    else assert.deepEqual(f.events, ["native-write", "cache-body-observed", ["default", "markdown"], ["materialize", "Ghost", f.file.path], ["remap", "Ghost", f.file.path], ["open", f.file.path]]);
   } finally { f.cancel(); await operation?.catch(() => {}); globalThis.window = previousWindow; f.clean(); }
 });
+
+for (const central of [true, false]) test(`ghost promotion remaps saved navigation and ${central ? "follows the promoted center" : "preserves another center"}`, async () => {
+  const previousWindow = globalThis.window; globalThis.window = { setTimeout, clearTimeout };
+  const f = createdMetadataFixture(), ghost = { path: "Ghost", name: "Ghost display" }; let operation;
+  try {
+    f.context.settings = { lastActivePath: central ? "Ghost" : "Other.md" };
+    f.context.rememberNewNodeDefaultType = async () => {};
+    f.context.index.materializeFile = (oldPath, file) => { assert.equal(oldPath, "Ghost"); ghost.path = file.path; f.events.push("materialized"); return true; };
+    f.context.remapNavigationPaths = (oldPath, path) => {
+      assert.equal(oldPath, "Ghost", "Captured identity survives synchronous page promotion");
+      if (f.context.settings.lastActivePath === oldPath) f.context.settings.lastActivePath = path;
+      f.events.push("remapped"); return true;
+    };
+    f.context.notifyNavigation = path => { assert.equal(path, f.file.path); assert.equal(f.context.settings.lastActivePath, path); f.events.push("navigated"); };
+    f.context.saveSettings = async (...args) => { assert.deepEqual(args, [false, false]); f.events.push("saved"); };
+    f.context.openInDocumentLeaf = async file => { assert.equal(file, f.file); f.events.push("opened"); };
+    operation = productionFunction("src/main.ts", "materializeGhostPage", {}).call(f.context, ghost, "Created", "markdown", "");
+    await nextCreatedStep(); f.observe(); assert.equal(await operation, true);
+    assert.deepEqual(f.events, ["native-write", "cache-body-observed", "materialized", "remapped", ...(central ? ["navigated"] : []), "saved", "opened"]);
+    assert.equal(f.context.settings.lastActivePath, central ? f.file.path : "Other.md");
+  } finally { f.cancel(); await operation?.catch(() => {}); globalThis.window = previousWindow; f.clean(); }
+});
+
+/** Native creation writes need file identities and current frontmatter, never graph/index readiness or drawing-body reads. */
+for (const mode of ["refreshing", "preview-failed", "source-replaced", "target-renamed", "unloaded", "rename-after-save"]) {
+  test(`drawing-to-drawing creation ${mode} uses native identities independently of index state`, async () => {
+    const origin = page("Parent.md"), target = page("Child.md"), files = new Map([[origin.path, origin.file], [target.path, target.file]]);
+    origin.file.stat = { size: 20 * 1024 * 1024, mtime: 1 };
+    let persisted = { "excalidraw-plugin": "parsed", Child: ["[[Existing.md]]"], Parents: ["[[Keep.md]]"], Title: "Keep title" }, writes = 0, previews = 0;
+    const context = { unloading: false, app: { vault: { getFileByPath: path => files.get(path), cachedRead: assert.fail },
+      metadataCache: { getFileCache: assert.fail }, fileManager: { processFrontMatter: async (file, mutate) => {
+        assert.equal(file, origin.file);
+        if (mode === "source-replaced") files.set(origin.path, { path: origin.path });
+        if (mode === "target-renamed") { files.delete(target.path); target.file.path = "Renamed.md"; files.set(target.file.path, target.file); }
+        if (mode === "unloaded") context.unloading = true;
+        const next = structuredClone(persisted); mutate(next); persisted = next; writes++;
+        if (mode === "rename-after-save") { files.delete(target.path); target.file.path = "Renamed.md"; files.set(target.file.path, target.file); }
+      } } }, index: { withForegroundPriority: async work => work(), insertCreatedFile: () => target, get: () => target,
+        isSemanticWriteReady: assert.fail, prepareRelationshipPair: assert.fail,
+        refreshVisibleHostMetadataPreviews: () => { previews++; if (mode === "preview-failed") throw new Error("Preview failed after saving"); } }, configuredDisplayNameField: () => null,
+      prepareRelationshipMutation: assert.fail, publishSavedRelationship: assert.fail, translator: key => key,
+      referenceForPage: page => `[[${page.path}]]`, valueContainsTarget: (values, _file, page) => values.includes(`[[${page.path}]]`),
+      pruneManagedMetadataWrites() {}, managedMetadataWrites: new Map() };
+    context.appendRelationshipReference = productionFunction("src/main.ts", "appendRelationshipReference", { normalizeFieldName: actualNormalizeFieldName });
+    const link = productionFunction("src/main.ts", "linkNewRelatedFile", { normalizeFieldName: actualNormalizeFieldName, SavedRelationshipPendingError: ActualSavedPendingError, console: { error() {} } }).bind(context);
+    if (mode === "refreshing" || mode === "preview-failed") {
+      const result = await link(origin, "child", target.file, "child");
+      assert.equal(result.state, "saved-pending"); assert.equal(result.page, target); assert.equal(writes, 1); assert.equal(previews, 1);
+      assert.deepEqual(persisted, { "excalidraw-plugin": "parsed", Child: ["[[Existing.md]]", "[[Child.md]]"], Parents: ["[[Keep.md]]"], Title: "Keep title" });
+      await link(origin, "child", target.file, "child"); assert.equal(persisted.Child.length, 2, "Retry is idempotent");
+    } else {
+      await assert.rejects(link(origin, "child", target.file, "child"), mode === "rename-after-save" ? ActualSavedPendingError : /endpointChanged/);
+      assert.equal(writes, mode === "rename-after-save" ? 1 : 0); assert.equal(previews, 0);
+    }
+  });
+}

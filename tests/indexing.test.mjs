@@ -298,7 +298,7 @@ assert(!createGhostSource.includes("rebuildIndex("), "Materializing a ghost node
 assert(mainSource.includes("this.index.semanticParentPages(page)"), "Ghost destination resolution must consider every semantic parent");
 assert(mainSource.includes("getNewFileParent(sourcePath, proposedName)"), "Ghost/create-child locations must honor Obsidian's configured new-note folder logic");
 assert(mainSource.includes("new MaterializeGhostModal("), "Ambiguous destinations or Excalidraw choices must use the materialization dialog");
-assert(mainSource.includes("this.index.renameFile(page.path, file)"), "Materializing a ghost in another folder must remap the live virtual page instead of rebuilding the vault");
+assert(mainSource.includes("this.index.materializeFile(oldPath, file)"), "Materializing a ghost must explicitly promote retained incidence instead of treating it as a native rename");
 assert(mainSource.includes("this.index?.dematerializeFile(deleted.path)"), "Deleting an active Markdown file must dematerialize the existing GraphPage instead of rebuilding/falling back to root");
 assert(mainSource.includes('this.app.vault.getFileByPath(file.path) !== file'), "Metadata events for already-deleted TFiles must be ignored instead of resurrecting a stale patch/rebuild");
 assert(mainSource.includes("this.settlePatchOnlyBacklogIfIdle()"), "Deleting a note must clear metadata-only rebuild work once no dirty Markdown paths remain");
@@ -371,7 +371,7 @@ globalThis.window = globalThis;
 
 function compile(relativePath, targetPath = relativePath) {
   const sourcePath = join(root, relativePath);
-  const outputPath = join(temp, targetPath.replace(/\.ts$/, ".js"));
+  const outputPath = join(temp, targetPath.replace(/\.tsx?$/, ".js"));
   mkdirSync(dirname(outputPath), { recursive: true });
   const source = readFileSync(sourcePath, "utf8");
   const result = ts.transpileModule(source, {
@@ -379,6 +379,7 @@ function compile(relativePath, targetPath = relativePath) {
       target: ts.ScriptTarget.ES2021,
       module: ts.ModuleKind.CommonJS,
       esModuleInterop: true,
+      jsx: ts.JsxEmit.ReactJSX,
       strict: true,
     },
     fileName: sourcePath,
@@ -419,6 +420,13 @@ for (const file of [
   "src/core/graph/sourcePolicy.ts",
   "src/core/graph/settings.ts",
   "src/core/graph/settingsPolicy.ts",
+  "src/core/contracts/appearance.ts",
+  "src/core/contracts/colorValue.ts",
+  "src/core/plex/colorPreferences.ts",
+  "src/core/plex/compassBackground.ts",
+  "src/core/plex/colorEditing.ts",
+  "src/core/plex/appearanceThemes.ts",
+  "src/adapters/obsidian/colorPresentation.ts",
   "src/core/graph/presentation.ts",
   "src/index/GraphPresentation.ts",
   "src/index/LegacySnapshotPolicy.ts",
@@ -449,6 +457,28 @@ for (const file of [
   "src/adapters/obsidian/relationshipMetadataWrite.ts",
   "src/adapters/obsidian/settingsNavigation.ts",
   "src/adapters/obsidian/hiddenPropertyName.ts",
+  "src/ui/StyleEditorModal.ts",
+  "src/ui/ColorSourceModal.ts",
+  "src/ui/CompassSettingsModal.tsx",
+  "src/ui/ColorPaletteModal.ts",
+  "src/ui/ColorPairModal.ts",
+  "src/ui/ColorAdoptionModal.ts",
+  "src/ui/AppearanceThemesModal.ts",
+  "src/ui/StyleManagerList.ts",
+  "src/ui/StyleColorControls.ts",
+  "src/ui/StyleSwatchScope.ts",
+  "src/adapters/obsidian/colorChanges.ts",
+  "src/ui/ColorLiteralEditor.ts",
+  "src/ui/ColorSourceEditor.ts",
+  "src/ui/ColorPreview.ts",
+  "src/ui/ColorSwatchList.ts",
+  "src/adapters/obsidian/sampledColorValue.ts",
+  "src/core/plex/colorCounterpart.ts",
+  "src/core/plex/colorContrast.ts",
+  "src/adapters/obsidian/rgbColorControl.ts",
+  "src/adapters/obsidian/colorScope.ts",
+  "src/adapters/obsidian/colorSample.ts",
+  "src/adapters/obsidian/themePreview.ts",
   "src/ui/HiddenFieldSetupModal.ts",
   "src/util/perf.ts",
   "src/main.ts",
@@ -477,6 +507,7 @@ for (const file of [
   "src/adapters/obsidian/sourceLocalContributorDiscovery.ts",
   "src/adapters/obsidian/sourceAcquisition.ts",
   "src/index/GraphBuilder.ts",
+  "src/index/UrlAdjacencyMap.ts",
   "src/index/SourceFingerprint.ts",
   "src/index/GraphIndex.ts",
   "src/index/ForegroundWorkScheduler.ts",
@@ -590,14 +621,17 @@ class Notice { constructor() {} }
 class Modal { constructor(app) { this.app = app; } open() { Modal.latest = this; } }
 class App {}
 class AbstractInputSuggest {}
-class PluginSettingTab { constructor(app) { this.app = app; this.containerEl = { addClass() {} }; } update() {} }
+class SuggestModal extends Modal {}
+class ColorComponent {}
+const getLanguage = () => "en";
+class PluginSettingTab { constructor(app) { this.app = app; this.containerEl = { addClass() {}, isConnected: true }; } update() {} }
 function getIcon() { return null; }
 function getIconIds() { return []; }
 function normalizePath(path) { return path; }
 function setIcon() {}
 module.exports = {
   TAbstractFile, TFile, TFolder, getAllTags, moment, Platform, apiVersion: "1.14.2", Plugin, FileView, MarkdownView,
-  Menu, Notice, normalizePath, setIcon, Modal, App, AbstractInputSuggest, PluginSettingTab, getIcon, getIconIds,
+  Menu, Notice, normalizePath, setIcon, Modal, App, AbstractInputSuggest, PluginSettingTab, getIcon, getIconIds, SuggestModal, ColorComponent, getLanguage,
 };
 `);
 
@@ -894,6 +928,29 @@ const indexingStatusContext = {
   diagnostics.phase("hydration", "evidence");diagnostics.processed("hydration");
   context.index.getSnapshotHydrationDiagnostics = () => ({ phase: "evidence" });
   assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "Loading relationship evidence — 1 records loaded");
+  // Complete hydration must not hide the still-running source pass behind a generic label.
+  context.index.hasPendingSnapshotHydration = /** The cached graph has finished loading. */ () => false;
+  context.rebuildTask = null;
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).phase, "preparing");
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "Processing pending changes — 1 / 5 notes (20%)");
+  context.rebuildTask = Promise.resolve();
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "index.statusIndexingProgress",
+    "An active graph compilation owns the label rather than a paused source pass");
+  context.rebuildTask = null;
+  context.index.isCheckpointSaving = /** A real save takes presentation priority. */ () => true;
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "index.statusSavingCache");
+  context.index.isCheckpointSaving = /** The save has finished. */ () => false;
+  context.index.getUrlIndexProgress = /** Optional URL work keeps its existing label. */ () => ({ active: true, failed: false, processed: 2, total: 5 });
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "indexing.urlsProgress");
+  context.index.getUrlIndexProgress = indexingStatusContext.index.getUrlIndexProgress;
+  context.index.isOnDemandMode = /** Local readiness never adopts global source progress. */ () => true;
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "indexing.localPreparing");
+  context.index.isOnDemandMode = indexingStatusContext.index.isOnDemandMode;
+  diagnostics.phase("source", "complete");
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "index.statusPreparing",
+    "A completed source pass cannot claim ongoing validation");
+  context.initialIndexComplete = true;context.indexDirty = false;
+  assert.equal(KplexPlugin.prototype.getIndexStatus.call(context).label, "index.statusReady");
   context.computeIndexStatusFacts = KplexPlugin.prototype.computeIndexStatusFacts;
   context.index.getSourceAcquisitionCounters = () => ({ vaultReads: 0, parses: 0 });
   context.index.getSemanticPreparationDiagnostics = () => ({ fullBuilds: 0 });
@@ -1102,7 +1159,7 @@ for (const axis of ["width", "height"]) {
   KplexPlugin.prototype.ensureAdjacentFileLeafSize.call(context, anchor, pane);
   assert.deepEqual(writes, [], "Sizing must not cross unrelated workspace splits");
 }
-const { persistedPageFromGraphPage, addPersistedPageToState, hydratePersistedPageRelations, hydratePersistedRelations, hydrateGraphState, computeIndexSettingsSignature, computeVaultSignature, persistedDeclarationFromEvidence } = require(join(temp, "src/index/IndexSnapshot.js"));
+const { persistedPageFromGraphPage, addPersistedPageToState, hydratePersistedPageRelations, hydratePersistedRelations, hydrateGraphState, computeIndexSettingsSignature, computeVaultSignature, persistedDeclarationFromEvidence, serializeGraphState } = require(join(temp, "src/index/IndexSnapshot.js"));
 const { createGraphState } = require(join(temp, "src/index/GraphState.js"));
 const { buildCentralSectionExpansion, canExpandCentralSections, projectCentralSectionExpansion } = require(join(temp, "src/index/SectionExpansion.js"));
 const { parseBodyMetadata, parseBodyMetadataCore, parseBodyMetadataCooperative } = require(join(temp, "src/index/fieldParser.js"));
@@ -1439,6 +1496,41 @@ const plugin = { app, settings, getIndexSourceRevision: () => 0, recordDiagnosti
 }
 
 const index = new GraphIndex(plugin, app);
+
+// Full binding, the actual per-file declaration bridge and snapshot replay must preserve the
+// same physical owner/property plus reciprocal labels. No Vault data or live index is changed.
+{
+  const {NormalizedGraphCompiler}=require(join(temp,"src/core/graph/compiler.js"));
+  const {NormalizedSourcePatchPreparer}=require(join(temp,"src/core/graph/patch.js"));
+  const source={id:'Note A.md',kind:'document',state:'materialized',semanticPath:'Note A.md',physicalPath:'Note A.md'};
+  const target={id:'Note B.md',kind:'document',state:'materialized',semanticPath:'Note B.md',physicalPath:'Note B.md'};
+  const entity=ref=>({kind:'entity',source:ref,sourceRevision:'pair:1',entity:ref,name:ref.id,url:null,file:{name:ref.id,extension:'md',path:ref.id,mtime:files.get(ref.id).stat.mtime}});
+  const value={source,sourceRevision:'pair:1',valueId:'pair-property'};
+  const records=[entity(source),entity(target),{...value,kind:'reference-value',fieldName:'Replies to',normalizedFieldName:'replies-to',surface:'frontmatter',ordinal:0,origin:'physical'},
+    {...value,kind:'reference-payload',index:0,final:true,text:'[[Note B]]'},
+    {...value,kind:'reference-candidate',ordinal:0,final:true,hostOccurrenceCount:0,target:{entity:target,rawTarget:'Note B',resolvedBy:'host'}}];
+  const pairSettings={...settings,maxLabelLength:30,hierarchy:{...settings.hierarchy,previous:['Replies to/Replied by']}};
+  const runtime={now:()=>0,yield:async()=>{},isCurrent:()=>true,sliceBudgetMs:8,resolverBatchSize:32};
+  const feed=async owner=>{const boundary={generation:'paired-bridge',snapshotRevision:'paired-bridge'},read=owner.beginRead(boundary);assert.equal(await owner.acceptBatch(read,{boundary,sequence:0,final:true,records}),true);assert.equal(owner.completeRead(read,boundary),true);};
+  const compiler=new NormalizedGraphCompiler(pairSettings,runtime);await feed(compiler);const compiled=await compiler.finish();assert(compiled);
+  const builder=new GraphBuilder({...plugin,settings:pairSettings},app,new Map(),index.metadataParser,index.indexedDb,()=>true);
+  const full=await builder.bindCompiledGraph(compiled,{materializedFile:facet=>files.get(facet.path)});assert(full);
+  const preparer=new NormalizedSourcePatchPreparer(source.id,pairSettings,runtime,{entity:ref=>entity(ref)});await feed(preparer);
+  const prepared=await preparer.finish();assert.equal(prepared.outcome,'prepared');
+  const patched=createGraphState();for(const page of full.pages.values())addPersistedPageToState(patched,persistedPageFromGraphPage(page),app);
+  for(const item of prepared.patch.compilation.declarations())assert.equal(builder.addPreparedDeclaration(patched,item),true);
+  require(join(temp,'src/index/RelationResolver.js')).resolveEvidenceStore(patched.pages,patched.evidence);
+  const restored=hydrateGraphState(JSON.parse(JSON.stringify(serializeGraphState(patched,app,pairSettings))),app);
+  for(const state of [full,patched,restored]){
+    const reverse=state.evidence.between(target.id,source.id).find(item=>item.sourceKind==='frontmatter-ontology');
+    assert(reverse);assert.equal(reverse.definition,'replied-by');assert.equal(reverse.fieldName,'Replies to');
+    assert.equal(reverse.inverseFieldName,'Replied by');assert.equal(reverse.inverseRole,'next');assert.equal(reverse.declaredByPath,source.id);
+    assert.equal(state.pages.get(target.id).neighbours.get(source.id).nextFriendTypeDefinition,'replied-by');
+  }
+  const membership=Object.create(GraphIndex.prototype);membership.plugin={settings:pairSettings};
+  membership.discoveredFields=()=>['Replies to','Replied by','Unknown'].map(name=>({name,normalized:name.toLowerCase().replaceAll(' ','-'),count:1}));
+  assert.deepEqual(membership.unassignedOntologyFields().map(item=>item.name),['Unknown']);
+}
 
 // Restore has a temporary event fence before the normal reactive listeners are installed.
 // Events before inventory capture are already represented there; later events must remain queued
@@ -4360,10 +4452,11 @@ try {
     const edgeJs = ts.transpileModule(plexGraphSource.slice(markerStart, markerEnd) + plexGraphSource.slice(edgeStart, edgeEnd), {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, jsx: ts.JsxEmit.React },
     }).outputText;
-    const Edge = new Function("React", "LinkDirection", "gatesForEdge", "gatePoint", "edgeGeometry", "alphaHexToCss", "relationLabel", `${edgeJs}; return Edge;`)(
+    const Edge = new Function("React", "LinkDirection", "gatesForEdge", "gatePoint", "edgeGeometry", "alphaHexToCss", "relationLabel", "NATIVE_LINK_STROKE", "NATIVE_LINK_TEXT", `${edgeJs}; return Edge;`)(
       { createElement: (type, props, ...children) => ({ type, props, children }) }, LinkDirection,
       () => ({ source: "left", target: "right" }), () => ({ x: 0, y: 0 }),
       () => ({ d: "M0 0L1 1", midpoint: { x: 0, y: 0 } }), value => value, value => value,
+      require(join(temp, "src/index/style.js")).NATIVE_LINK_STROKE, require(join(temp, "src/index/style.js")).NATIVE_LINK_TEXT,
     );
     try {
       assert.equal(await arrowIndex.rebuild(), true);

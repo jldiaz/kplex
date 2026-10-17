@@ -110,10 +110,8 @@ export class OntologySuggester extends EditorSuggest<string> {
       previous: "previous",
       next: "next",
     };
-    const getFields = (role: RelationshipRole): string[] =>
-      typeof this.plugin.ontologyFieldsForRole === "function"
-        ? this.plugin.ontologyFieldsForRole(role)
-        : ontologyFieldsForHierarchyRole(h, role);
+    const getFields = /** The same configured-field grammar supplies host editors and this native suggester. */
+      (role: RelationshipRole): string[] => ontologyFieldsForHierarchyRole(h, role);
 
     if (this.suggestType !== "all") {
       return getFields(roleForType[this.suggestType]);

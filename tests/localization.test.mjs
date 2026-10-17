@@ -275,6 +275,14 @@ test("future locales use their own plural categories rather than English count e
 test("shortcut formatter is deterministic across desktop and explicit mobile keyboard conventions", () => {
   const modF = { key: "F", modifiers: ["mod"] };
   assert.equal(shortcut.formatShortcut(modF, environment({ keyConvention: "macos" }), shortcutLabels), "Command+F");
+  // Settings describe the modifier even when configuring a future external keyboard.
+  const hover = {key: "", modifiers: ["alt"]};
+  assert.equal(shortcut.formatShortcut(hover, environment({ keyConvention: "macos" }), shortcutLabels, true, ""), "Option");
+  assert.equal(shortcut.formatShortcut(hover, environment({ keyConvention: "windows" }), shortcutLabels, true, ""), "Alt");
+  assert.equal(shortcut.formatShortcut(hover, environment({ keyConvention: "ios" }), shortcutLabels, true, ""), "Option");
+  assert.equal(shortcut.formatShortcut(hover, environment({ keyConvention: "android" }), shortcutLabels, true, ""), "Alt");
+  assert.equal(shortcut.formatShortcut(hover, environment({ keyConvention: "unknown" }), shortcutLabels, true, ""), null);
+
   assert.equal(shortcut.formatShortcut(modF, environment({ keyConvention: "windows" }), shortcutLabels), "Control+F");
   assert.equal(shortcut.formatShortcut(modF, environment({ keyConvention: "ios" }), shortcutLabels), "Command+F");
   assert.equal(shortcut.formatShortcut(modF, environment({ keyConvention: "android" }), shortcutLabels), "Control+F");

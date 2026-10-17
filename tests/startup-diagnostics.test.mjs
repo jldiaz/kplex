@@ -45,3 +45,24 @@ test("retry progress distinguishes passes without retaining detailed diagnostics
   d.dispose();d.phase("source", "source-reconciliation", 3);
   assert.equal(d.progress("source").pass, 2, "Unload stops pass updates");
 });
+
+/** Aggregate work remains observable after readiness without enabling detailed timings or owner tracking. */
+test("session work counts actual boundaries through readiness and stops on unload", () => {
+  const d = new StartupDiagnostics();d.begin(false);
+  d.recordWork("sourceInventoryPasses");d.recordWork("sourceInventoryPasses");
+  d.recordWork("fullBuildStarts");d.recordWork("completeSnapshotSaves");
+  assert.deepEqual(d.snapshot().sessionWork, {
+    sourceInventoryPasses: 2, fullBuildStarts: 1, nodeCatalogStarts: 0,
+    completeSnapshotSaves: 1, checkpointSaves: 0,
+  });
+  assert.deepEqual(d.snapshot().phases, []);assert.equal(d.owners.size, 0);
+  d.finish();d.recordWork("checkpointSaves");
+  assert.equal(d.snapshot().sessionWork.checkpointSaves, 1, "Post-ready work remains visible");
+  const copy = d.snapshot();copy.sessionWork.fullBuildStarts = 999;
+  assert.equal(d.snapshot().sessionWork.fullBuildStarts, 1, "Reports cannot mutate the counters");
+  d.dispose();d.recordWork("fullBuildStarts");
+  assert.equal(d.snapshot().sessionWork.fullBuildStarts, 1, "Late callbacks after unload do not count");
+  const measured = new StartupDiagnostics();measured.begin(true);measured.finish();
+  measured.recordWork("fullBuildStarts");
+  assert.equal(measured.snapshot().sessionWork.fullBuildStarts, 1, "Frozen detailed timings do not hide post-ready work");
+});

@@ -9,6 +9,7 @@ const loaded = loadPortableModules([
   "src/core/graph/resolver.ts",
   "src/core/graph/relations.ts",
   "src/core/graph/sourcePolicy.ts", "src/core/parser/metadata.ts", "src/core/parser/referenceValues.ts",
+  "src/core/graph/settingsPolicy.ts", "src/application/frontmatterUnlink.ts",
   "src/adapters/obsidian/ontologySourceCollector.ts", "src/index/SourceFingerprint.ts",
 ], { obsidian: `class TFile { constructor(path) { this.path=path; this.name=path.split('/').pop();
   this.extension=this.name.split('.').pop(); this.basename=this.name.replace(/\\.[^.]*$/, '');
@@ -472,3 +473,75 @@ test("parent/child slash syntax places reverse links in child role with inverse 
   assert.equal(toSource.childTypeDefinition, "superclass-of");
 });
 
+test("pair reassignment preserves unrelated halves from every intersecting existing pair", () => {
+  const hierarchy={...emptyHierarchy(),parents:['A/B'],children:['D/C'],exclusions:[]};
+  c.reassignFieldInHierarchy(hierarchy,'A/C','previous');
+  assert.deepEqual(hierarchy.parents,[]);
+  assert.deepEqual(hierarchy.children,['B','D']);
+  assert.deepEqual(hierarchy.previous,['A/C']);
+  assert.deepEqual(c.ontologyFieldsForHierarchyRole(hierarchy,'next'),['C']);
+});
+
+test("physical literal slashes stay literal when menus reassign escaped or directional fields", () => {
+  const hierarchy={...emptyHierarchy(),parents:['Track\\/Part'],hidden:['Hidden/Path'],exclusions:[]};
+  c.reassignFieldInHierarchy(hierarchy,'Track/Part','child',{literal:true});
+  assert.deepEqual(hierarchy.parents,[]);
+  assert.deepEqual(hierarchy.children,['Track\\/Part']);
+  assert.deepEqual(c.ontologyFieldsForHierarchyRole(hierarchy,'child'),['Track/Part']);
+  assert.deepEqual(c.ontologyFieldsForHierarchyRole(hierarchy,'parent'),[]);
+  c.reassignFieldInHierarchy(hierarchy,'Hidden/Path','previous',{literal:true});
+  assert.deepEqual(hierarchy.hidden,[]);
+  assert.deepEqual(c.ontologyFieldsForHierarchyRole(hierarchy,'previous'),['Hidden/Path']);
+  assert.deepEqual(c.ontologyFieldsForHierarchyRole(hierarchy,'next'),[]);
+});
+
+test("reciprocal graph labels never replace the declaring property used for edit authorization", async () => {
+  const targetFile=new TFile('Other.md'),found=await collect(metadata({'Replies to':'[[Other]]'}),{host:host([targetFile])});
+  const source=ref(found.file),records=[entityFact(source),entityFact(ref(targetFile)),...found.records];
+  const settings=policy({previous:['Replies to/Replied by']});
+  const graph=await compile(records,settings),forward=graph.evidenceBetween(source.id,targetFile.path)[0],reverse=graph.evidenceBetween(targetFile.path,source.id)[0];
+  assert.equal(forward.fieldName,'Replies to');assert.equal(reverse.fieldName,'Replies to');
+  assert.equal(reverse.definition,'replied-by');assert.equal(reverse.inverseFieldName,'Replied by');
+  assert.equal(reverse.declaredByPath,source.id);assert.equal(reverse.declaredTargetPath,targetFile.path);
+  assert.equal(JSON.parse(c.frontmatterDeclarationKey(reverse))[2],'replies-to');
+  const patch=new c.NormalizedSourcePatchPreparer(source.id,settings,runtime(),{entity:entity=>entityFact(entity)});
+  await feed(patch,records);const result=await patch.finish();assert.equal(result.outcome,'prepared');
+  assert.deepEqual(declarations(result.patch.compilation),declarations(graph));
+});
+
+test("Hidden slash names remain directional literal fields rather than incomplete reciprocal pairs", async () => {
+  const targetFile=new TFile('Other.md'),settings=policy({hidden:['Secret/Link']});
+  const selector=new c.ReferencePolicySelector(settings);
+  assert.equal(selector.assignmentsForField('Secret/Link').length,1);assert.equal(selector.assignmentsForField('Secret').length,0);
+  const found=await collect(metadata({'Secret/Link':'[[Other]]'}),{host:host([targetFile])});
+  const source=ref(found.file),graph=await compile([entityFact(source),entityFact(ref(targetFile)),...found.records],settings);
+  assert.equal(graph.evidenceBetween(source.id,targetFile.path)[0].role,'hidden');
+  assert.deepEqual(graph.evidenceBetween(targetFile.path,source.id),[]);
+});
+
+test("only reciprocal or escaped interpretation changes require the v5 graph signature", () => {
+  const ordinary={...policy(),hierarchy:{...emptyHierarchy(),exclusions:[]},baseNodeStyle:{maxLabelLength:30},datePropertyRelations:'parent'};
+  const plain=c.encodeIndexSettingsSignature(ordinary);assert.equal(JSON.parse(plain).signatureVersion,4);
+  assert.equal(c.compareIndexSettingsSignature(plain,ordinary).compatible,true);
+  for(const name of ['Replies to/Replied by','Track\\/Part']){
+    const mapped={...ordinary,hierarchy:{...ordinary.hierarchy,previous:[name]}},signature=c.encodeIndexSettingsSignature(mapped),saved=JSON.parse(signature);
+    assert.equal(saved.signatureVersion,5);assert.equal(c.compareIndexSettingsSignature(signature,mapped).compatible,true);
+    const old=JSON.stringify({...saved,signatureVersion:4}),comparison=c.compareIndexSettingsSignature(old,mapped);
+    assert.equal(comparison.compatible,false);assert.equal(comparison.reason,'semantic-settings-changed');
+    assert.deepEqual(comparison.changedKeys,['hierarchy.previous']);
+  }
+  for(const role of ['hidden','exclusions'])assert.equal(JSON.parse(c.encodeIndexSettingsSignature({...ordinary,hierarchy:{...ordinary.hierarchy,[role]:['Literal/Property']}})).signatureVersion,4);
+});
+
+test("ordinary quoted whitespace keys keep historical normalization, configured spelling and v4 signatures", () => {
+  for(const role of ['parents','hidden']){
+    const settings={...policy({[role]:[' Foo ']}),hierarchy:{...policy({[role]:[' Foo ']}).hierarchy,exclusions:[]},baseNodeStyle:{maxLabelLength:30},datePropertyRelations:'parent'};
+    const mapping=c.parseHierarchyFieldMapping(' Foo ',role!=='hidden');
+    assert.equal(mapping.forward,' Foo ');assert.equal(mapping.normalizedForward,'-foo-');
+    const selector=new c.ReferencePolicySelector(settings);
+    assert.equal(selector.assignmentsForField(' Foo ')[0].configuredFieldName,' Foo ');
+    assert.equal(selector.assignmentsForField('Foo').length,0,'No ordinary-field normalization migration is introduced');
+    const signature=c.encodeIndexSettingsSignature(settings);assert.equal(JSON.parse(signature).signatureVersion,4);
+    assert.equal(c.compareIndexSettingsSignature(signature,settings).compatible,true);
+  }
+});

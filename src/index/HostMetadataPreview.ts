@@ -260,7 +260,7 @@ export class HostMetadataPreview {
       for (const field of group) {
         fieldBytes += field.length * 2;
         if (++fieldCount > MAX_PREVIEW_TARGETS || fieldBytes > MAX_PREVIEW_METADATA_BYTES) return null;
-        const mapping = parseHierarchyFieldMapping(field);
+        const mapping = parseHierarchyFieldMapping(field, group !== hierarchy.hidden && group !== hierarchy.exclusions);
         fields.add(mapping.normalizedForward);
         if (mapping.normalizedInverse) fields.add(mapping.normalizedInverse);
       }

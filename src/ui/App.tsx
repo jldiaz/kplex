@@ -7,7 +7,13 @@
  * Action-dispatched sync/Sidecar menus resolve fresh surface-local control anchors without routing DOM events through the action manager.
  * Native follow retains the latest canonical file while hidden and suppresses fallback scenes/motion during partial hydration.
  * Directional Sidecar attachment controls project host eligibility and use the same native follow owner for inward synchronization.
+ * Existing native File properties panes follow the active surface's central file through a leased host adapter.
  */
+import { subscribeAppearanceSources } from "../adapters/obsidian/colorChanges";
+import type {AppearanceOwner} from "../core/plex/appearanceThemes";
+import { ColorSourceModal } from "./ColorSourceModal";
+import type { LensColorRequest, LensColorDialog } from "./PlexFilter";
+import { appearanceWithoutColors } from "../core/contracts/appearance";
 import {
   useCallback,
   useEffect,
@@ -48,6 +54,7 @@ import { createLegacyGraphSearchRead } from "../adapters/obsidian/graphContracts
 import { isEmbeddedMarkdownLeaf } from "../adapters/obsidian/embeddedMarkdownLeaf";
 import { focusEmbeddedMarkdown } from "../adapters/obsidian/embeddedMarkdownFocus";
 import { getDraggedFile } from "../adapters/obsidian/fileExplorerDrag";
+import { registerFilePropertiesCenter, type FilePropertiesCenterLease } from "../adapters/obsidian/filePropertiesCenter";
 import { ActionButton } from "./components/ActionButton";
 import { DoubleTapGesture } from "./components/DoubleTapGesture";
 import { InfoBubble } from "./components/InfoBubble";
@@ -242,6 +249,7 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
   const [indexStatusInfoMode, setIndexStatusInfoMode] = useState<"closed" | "hover">("closed");
   const suppressRestoredIndexStatusFocusRef = useRef(false);
   const [renderRevision, forceRender] = useState(0);
+  const [paintRevision, forcePaint] = useState(0);
   const [plexFilter, setPlexFilter] = useState<PlexFilterState>(EMPTY_PLEX_FILTER);
   const [filterLayoutMode, setFilterLayoutMode] = useState<GraphFilterLayoutMode>("keep");
   const [findFilterOwner, setFindFilterOwner] = useState<{
@@ -443,7 +451,11 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
     // index publication unless this surface is actually visible; it catches up on reveal.
     if (plugin.isKplexLeafVisible(hostLeaf)) forceRender((value) => value + 1);
   }), [plugin, hostLeaf, activatePendingDocumentFollow]);
-  useEffect(/** Host previews publish through presentation; settle the owned native intent without refreshing semantics. */ () => plugin.index.subscribePresentation(/** Adopt a newly readable exact center, then repaint only visible surfaces. */ () => {
+  useEffect(/** Host previews publish through presentation; settle the owned native intent without refreshing semantics. */ () => plugin.index.subscribePresentation(/** Adopt a newly readable exact center, then repaint only visible surfaces. */ (event) => {
+    if (event.kind === "paint") {
+      if (plugin.isKplexLeafVisible(hostLeaf)) forcePaint(value => value + 1);
+      return;
+    }
     activatePendingDocumentFollow();
     if (plugin.isKplexLeafVisible(hostLeaf)) forceRender((value) => value + 1);
   }), [plugin, hostLeaf, activatePendingDocumentFollow]);
@@ -472,7 +484,8 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
     });
     return () => plugin.app.metadataCache.offref(ref);
   }, [plugin, hostLeaf, plexFilterPredicate, compiledGraphLenses.usesFrontmatter]);
-  useEffect(() => plugin.subscribeGraphLenses((next) => setGraphLensesState(next)), [plugin]);
+  useEffect(() => plugin.subscribeGraphLenses((next) => setGraphLensesState(current =>
+    JSON.stringify(appearanceWithoutColors("graphLenses", current)) === JSON.stringify(appearanceWithoutColors("graphLenses", next)) ? current : next)), [plugin]);
   useEffect(() => plugin.subscribeSidecar(() => setSidecarRevision((value) => value + 1)), [plugin]);
   useEffect(() => plugin.subscribeNavigation((path) => {
     const target = plugin.index.get(path);
@@ -516,6 +529,22 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
     ?? (fallbackPath ? plugin.index.get(fallbackPath) : undefined)
     ?? (waitingForDocument ? undefined : plugin.index.get("folder:/"));
   const hasPage = Boolean(page);
+  const propertiesCenterFile = useRef<TFile | null>(null);
+  const propertiesCenterLease = useRef<FilePropertiesCenterLease | null>(null);
+  propertiesCenterFile.current = page?.file ?? null;
+  useEffect(/** The native Properties follower owns no graph demand and retires with this exact root/document. */ () => {
+    const lease = registerFilePropertiesCenter(plugin.app, hostLeaf,
+      /** Read the rendered center's canonical file, including materialization and non-file centers. */ () => propertiesCenterFile.current,
+      /** Background Plex roots must not replace the foreground surface's utility-pane identity. */ () => plugin.isKplexLeafVisible(hostLeaf));
+    propertiesCenterLease.current = lease;
+    return /** Release this root without cancelling a native disk operation already accepted by the host. */ () => {
+      if (propertiesCenterLease.current === lease) propertiesCenterLease.current = null;
+      lease.dispose();
+    };
+  }, [plugin, hostLeaf]);
+  useEffect(/** Refresh only a changed center identity/path; color and progress renders do not reload Properties. */ () => {
+    propertiesCenterLease.current?.refresh();
+  }, [page?.file, page?.path]);
   const graphSearchRead = useMemo(() => createLegacyGraphSearchRead({
     /** Preserve Vault files and URL aliases independently of the current Plex and graph filters. */
     search: (query, limit) => plugin.index.search(query, limit, "vault-files"),
@@ -644,10 +673,32 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
     return plugin.openPage(target, hostLeaf.view.containerEl.ownerDocument);
   }, [plugin, hostLeaf]);
 
-  const updateGraphLenses = useCallback((next: GraphLensDefinition[]) => {
-    setGraphLensesState(next);
-    void plugin.setGraphLenses(next);
-  }, [plugin]);
+  const updateGraphLenses = useCallback((next: GraphLensDefinition[], baseline?: GraphLensDefinition[], owner?: AppearanceOwner) => plugin.setGraphLenses(next, baseline, owner), [plugin]);
+
+  const lensAppearance = useMemo(/** Only the lens control subscribes; inactive metadata cannot rebuild the parent scene. */ () => ({
+    capture: /** Capture at editor/action opening, not when Save eventually runs. */ () => plugin.captureAppearanceOwner(),
+    isCurrent: /** Reject old activation epochs, including A→B→A. */ (owner: AppearanceOwner) => plugin.isAppearanceOwnerCurrent(owner),
+    subscribe: /** The control releases its selected-theme observation on unmount. */ (changed: () => void) => plugin.subscribeAppearanceThemes(changed),
+    name: /** Display data is read only on opening; render/paint never scans saved themes. */ () => plugin.settings.appearanceThemes?.themes.find(theme => theme.id === plugin.settings.appearanceThemes?.selectedId)?.name ?? translate("themes.userName"),
+  }), [plugin, translate]);
+
+  /** The native shell previews current paint; the detached React lens still owns its local draft. */
+  const editLensColor = useCallback((request: LensColorRequest): LensColorDialog => {
+    const target = request.target, owner = request.owner ?? plugin.captureAppearanceOwner();
+    const opening = structuredClone({colorPreferences: plugin.settings.colorPreferences, baseNodeStyle: plugin.settings.baseNodeStyle,
+      baseLinkStyle: plugin.settings.baseLinkStyle, backgroundColor: plugin.settings.backgroundColor});
+    /** A retired draft keeps its own palette/base while the document’s native CSS may still change. */
+    const current = (): Pick<typeof plugin.settings, "colorPreferences" | "baseNodeStyle" | "baseLinkStyle" | "backgroundColor"> => plugin.isAppearanceOwnerCurrent(owner) ? plugin.settings : opening;
+    const dialog = new ColorSourceModal(plugin.app, {sourceScope: rootRef.current?.querySelector<HTMLElement>(".kplex-plex") ?? rootRef.current ?? request.sourceScope, translate, bindEditor: editor => plugin.bindAppearanceEditor(editor, owner), title: request.title, target, initial: request.initial,
+      help: translate("colors.parentHelp"), actionLabel: translate("colors.useColor"), preferences: () => current().colorPreferences,
+      nodeStyle: () => ({...current().baseNodeStyle, ...request.nodeStyle()}), linkStyle: () => ({...current().baseLinkStyle, ...request.linkStyle()}),
+      background: () => current().backgroundColor, inherit: () => target.kind === "canvas" ? current().backgroundColor
+        : target.kind === "node" ? current().baseNodeStyle[target.field] : current().baseLinkStyle[target.field],
+      subscribeCss: changed => {const ref = plugin.app.workspace.on("css-change", changed); return () => plugin.app.workspace.offref(ref);},
+      subscribeColors: changed => subscribeAppearanceSources(listener => plugin.index.subscribePresentation(listener), () => plugin.settings, changed),
+      onSave: async source => {if (!plugin.isAppearanceOwnerCurrent(owner) || !request.apply(source)) throw new Error("Lens editor retired"); return {refreshPending: false};},
+    }); dialog.open(); return {element: dialog.containerEl, retire: () => dialog.retire()};
+  }, [plugin, translate]);
 
   const goHistory = (delta: number) => {
     const list = plugin.settings.navigationHistory;
@@ -804,7 +855,7 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
     rootRef.current?.focus({ preventScroll: true });
   };
 
-  /** Accept a single current Vault file from Obsidian File Explorer, including images and Canvas. */
+  /** Accept a current Vault file from native file or resolved-link drags, including Bases. */
   const handlePlexDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!getDraggedFile(plugin.app)) return;
     event.preventDefault();
@@ -1000,6 +1051,11 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
   const condensedBySidecar = sidecarAvailable && sidecarOpen && hostWidth > 0 && hostWidth <= plugin.settings.sidecarCondensedBreakpoint;
   const profileSurface: KplexViewSurface = condensedBySidecar ? "sidepanel" : surface;
   const viewSettings = useMemo(/** Display-mode-only renders retain the current scene settings identity; real settings/index changes still refresh it. */ () => plugin.getViewSettings(profileSurface), [plugin, profileSurface, renderRevision]);
+  const paintSettings = useMemo(/** Color publication keeps the scene's settings identity and geometry stable. */ () => plugin.getViewSettings(profileSurface), [plugin, profileSurface, renderRevision, paintRevision]);
+  const paintLenses = useMemo(/** Reuse compiled predicates while replacing only their already-sanitized style payloads. */ () => {
+    const styles = new Map(plugin.settings.graphLenses.map(lens => [lens.id, lens.style]));
+    return {...compiledGraphLenses, lenses: compiledGraphLenses.lenses.map(lens => ({...lens, style: styles.get(lens.id)}))};
+  }, [plugin, compiledGraphLenses, paintRevision]);
   const actions = usePlexActions({ plugin, hostLeaf, root: rootRef, convention: environment.keyConvention,
     center: page, graph: graphActionPorts, implementations: appImplementations, mounted: hasPage,
     onUserInteraction: /** Native commands/keyboard interactions pause before their accepted work. */ () => wander.pause(),
@@ -1147,8 +1203,8 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
               if (next.showCrossLinks !== plugin.settings.showCrossLinks) void toggleToolbarSetting("showCrossLinks");
               setFindFilterOwner(null); setPlexFilter(next);
             }}
-            lenses={graphLenses}
-            onLensesChange={updateGraphLenses}
+            lenses={plugin.settings.graphLenses} colorPalette={plugin.settings.colorPreferences.palette}
+            onLensesChange={updateGraphLenses} onEditColor={editLensColor} appearance={lensAppearance} lensesReadOnly={plugin.settings.graphLensesColorFuture !== undefined || plugin.settings.appearanceThemesFuture !== undefined}
             layoutMode={filterLayoutMode}
             onLayoutModeChange={/** An explicit layout choice belongs to the filter panel. */ (mode) => {
               setFindFilterOwner(null); setFilterLayoutMode(mode);
@@ -1210,7 +1266,7 @@ export function KplexApp({ plugin, surface, hostLeaf, translate, environment, on
           <div className="kplex-zone-label zone-left">{translate("app.zoneFriendsPrevious")}</div>
           <div className="kplex-zone-label zone-right">{translate("app.zoneChallengersNext")}</div>
           <div className="kplex-zone-label zone-child">{translate("app.zoneChildren")}</div>
-          <PlexGraph plugin={plugin} index={plugin.index} settings={viewSettings} surface={profileSurface} hostLeaf={hostLeaf} predicate={plexFilterPredicate} lenses={compiledGraphLenses} filterLayoutMode={filterLayoutMode} predicateRevision={predicateRevision} showCrossLinks={plugin.settings.showCrossLinks} activePath={page.path} renderRevision={renderRevision} findFocusRequest={findFocusRequest}
+          <PlexGraph plugin={plugin} index={plugin.index} settings={viewSettings} paintSettings={paintSettings} paintLenses={paintLenses} surface={profileSurface} hostLeaf={hostLeaf} predicate={plexFilterPredicate} lenses={compiledGraphLenses} filterLayoutMode={filterLayoutMode} predicateRevision={predicateRevision} showCrossLinks={plugin.settings.showCrossLinks} activePath={page.path} renderRevision={renderRevision} findFocusRequest={findFocusRequest}
           actionPorts={graphActionPorts} actionSurfaceId={actions.surfaceId} displayState={displayState} fullscreenAvailable={displayModes.fullscreenAvailable && environment.device === "desktop"}
           semanticRevision={plugin.index.getSemanticRevision()} navigationOrigin={navigationOrigin} onSemanticDemandAcquired={acknowledgeDocumentDemandHandover} onActivate={/** Manual graph navigation keeps the existing history and sync path. */ target => activate(target)} onWanderActivate={/** Explicit Wander origin survives asynchronous scene publications. */ target => activate(target, true, true, "wander")} onOpen={open} onOpenInSidecar={centerAndOpenSidecar} onCentralNodeEditorChange={setCentralNodeEditorEnabled} onCentralNodeModeChange={rememberCentralNodeMarkdownMode} areaSettingsMode={areaSettingsMode} onAreaSettingsModeChange={setAreaSettingsMode}
           onApplyFindFilter={applyFindFilter} appliedFindFilterQuery={findFilterOwner?.query ?? null} onClearFindFilter={clearFindFilter} />

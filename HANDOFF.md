@@ -14,18 +14,17 @@ Return uncommitted changes and actual results for main-agent review unless the m
 
 Obsidian is the production host; preserve the established portable semantic, identity/source, publication/revision, localization and environment boundaries.
 
-
-
 ---
 
-# Scanner assertion cleanup — validation return
+# PR #154: accepted implementation, main owns repository closeout
 
-Directly on main, base a77e9c0da44a65fdc173657e08740867986c6f3a; changes remain uncommitted. The maintainer requested the three unnecessary assertion findings in src/main.ts and explicitly excluded extensive tests.
+Offline implementation and independent review are complete/inactive. Main independently reviewed
+and accepted the scoped fixes. Branch feat/ontology-inverse-slash-syntax integrates main d40a339;
+original PR head 4500a97. Full Node 22.22.2 strict verification passes 2,061 test executions and exact
+Obsidian smoke; native reciprocal Settings/reload/unlink 5 and Date 24 pass. Runtime/test logic stayed
+frozen after the full run; test EOF whitespace, Date-driver basename repair and docs were checked afterward. All original
+disposable state restores, with no active work/controllers. Details and limits are in the durable
+review report and Refactor plan. Raw/superseded evidence remains local, never archive this handoff.
 
-All three modal-close wrappers now invoke the original class callback through prototype.onClose.call(modal), preserving the receiver without bind's weak return type or a redundant assertion. The original consent/cancellation cleanup remains in its existing wrapper.
-
-Node 22.22.2: `npx eslint src/main.ts` passes without warnings/errors; `npm run build` passes against actual Obsidian types; git diff --check passes. No extended suites ran. Logs are `/private/tmp/kplex-assertion-cleanup-lint.log` and `/private/tmp/kplex-assertion-cleanup-build-final.log`.
-
-The exact built artifacts were staged in CLI-confirmed kplex-test-small, preserving data.json. Main.js SHA-256: 9707dde2c484435a84d53ac3ea4d08955d3e969ec83caef74b552f6719a7b8d4. A single native Cancel smoke check passed: deletion consent cancelled, modal removed, pending ownership released, note retained; no errors captured. No note was deleted/edited and the temporary controller was removed. Receipt: `/private/tmp/kplex-assertion-cleanup-smoke.json`. Production and sibling repositories were untouched.
-
-Prior work is merged through PR #152. Its full verification CI passed after replacing a stale comment-based status-hook extractor with TypeScript AST selection. Prior [attachment/localization](docs/validation/sidecar-attachment-2026-10-13.md), [callout](docs/validation/index-status-callout-2026-10-13.md), and [risk regression](docs/validation/risk-based-regression-2026-10-13.md) evidence remains historical. The earlier #25 ResizeObserver error gate, physical Android acceptance and Windows production-vault vocabulary observation remain separately tracked; this cleanup does not claim to resolve them.
+Main owns final staging/commit/push/CI, authorized PR merge, then main/fetch. No offline changes
+pending, personal-vault access, release, further optimization or structural refactor authorized.

@@ -9,6 +9,8 @@
  * durable legacy UNKNOWN-impact journal for storage compatibility; no inverse resolver is invented.
  * Restart resolver closes validate canonical output before rewriting sources. Exact-head body-read
  * certificates avoid duplicate decoding and weak ownership does not retain parsed bodies at rest.
+ * Uncertain resolver comparisons authenticate resolution once under their selected reader; partial
+ * inspection never permits a host-current shortcut without complete family validation.
  * Source-backed search retains only bounded changed-owner endpoint incidence until publication;
  * cached canonical compilation decides materialization and rename/delete retire that incidence safely.
  * Optional URL alias maintenance compares current primary families before durable-only replacement;
@@ -1465,7 +1467,9 @@ export class ObsidianSourceAcquisition {
   /** Persist dormant facts even on a semantic no-op; current-alias consumers replace only the old
    * URL family from actual current-parser input, while retained primary families keep their grammar.
    * Optional maintenance additionally proves current primary equivalence and requires durable CAS;
-   * storage failure cannot introduce a memory mask or generic pending-inventory authority. */
+   * storage failure cannot introduce a memory mask or generic pending-inventory authority.
+   * A selected body may defer resolution authentication only to the ensuing exact-head comparison;
+   * changed selections still validate all families and concurrent host proof cannot bypass that read. */
   async acquire(file: TFile, body: ParsedBodyMetadata, caller: () => boolean = () => true, requireCurrentParser = false, optionalAliasesOnly = false): Promise<SourceAcquisitionResult> {
     this.start();
     const state = this.state(file);
@@ -1491,8 +1495,21 @@ export class ObsidianSourceAcquisition {
       const environment = await this.repository.observationDigest(environmentText);
       if (!current()) return { current: false, saved: false, reason: "cancelled" };
       const bodySelection = this.bodySelections.get(body);
+      const selectedHead = bodySelection?.head;
+      const selectedHostCurrent = !capture.state.resolutionDirty && selectedHead?.observation.environment === environment
+        && (selectedHead.observation.epoch === this.epoch && selectedHead.observation.revision === this.hostRevision
+          || capture.state.validatedHostRevision === this.hostRevision
+          || this.hostRevision === 0 && !capture.state.dirty);
+      // The comparison below authenticates the stored resolution before comparing fresh canonical
+      // output. Do not first decode it through inspect as well. This is exact-selection reuse only;
+      // optional URL maintenance retains its established complete primary-family proof.
+      const compareResolution = !optionalAliasesOnly && bodySelection?.saved === true && !!selectedHead
+        && bodySelection.families.values === "ready" && bodySelection.families["body-urls"] === "ready"
+        && !capture.state.created && !capture.state.dirty && physicalMatches(selectedHead.physical, capture.physical)
+        && (capture.state.identity === null || capture.state.identity === selectedHead.physical.identity)
+        && selectedHead.observation.environment === environment && !selectedHostCurrent;
       let inspection = await this.repository.inspect(file.path,
-        bodySelection?.saved ? ["metadata", "resolution"] : SOURCE_FAMILIES, current);
+        bodySelection?.saved ? compareResolution ? ["metadata"] : ["metadata", "resolution"] : SOURCE_FAMILIES, current);
       if (bodySelection?.saved) {
         if (inspection.saved && inspection.sequence === bodySelection.sequence
           && inspection.head?.sourceRevision === bodySelection.head?.sourceRevision) {
@@ -1520,7 +1537,8 @@ export class ObsidianSourceAcquisition {
         && (head.observation.epoch === this.epoch && head.observation.revision === this.hostRevision
           || capture.state.validatedHostRevision === this.hostRevision
           || this.hostRevision === 0 && !capture.state.dirty);
-      if (!upgradeUrls && intrinsic && hostCurrent && inspection.saved && inspection.reason === "ready" && head) {
+      if (!upgradeUrls && intrinsic && hostCurrent && inspection.saved && inspection.reason === "ready" && head
+        && inspection.families.resolution === "ready") {
         capture.state.observation = { ...head.observation };
         return { current: current(), saved: inspection.saved, reason: "ready" };
       }
@@ -1557,13 +1575,14 @@ export class ObsidianSourceAcquisition {
           }
         }
       }
-      if (head && intrinsic && SOURCE_FAMILIES.every(validFamily) && head.observation.environment === environment) {
+      if (head && intrinsic && SOURCE_FAMILIES.every(/** Only the selected comparison owns deferred resolution authentication. */
+        family => family === "resolution" && compareResolution || validFamily(family)) && head.observation.environment === environment) {
         // An uncertain native resolver wave fences every owner, but usually changes very few
         // bindings. Prove equality with the canonical resolver/Date producer before retaining the
         // exact durable observation. A changed, corrupt or superseded family takes normal repair.
         const same = await this.repository.matchesFamily(file.path, "resolution", inspection,
-          // The body is already owned and every family was just validated. Produce from those
-          // canonical parser inputs/current cache instead of opening two more family readers.
+          // Body and metadata are already authenticated. This selected comparison authenticates
+          // resolution while using canonical parser inputs/current cache for the fresh producer.
           this.resolution(metadata, file, cache, inspection, false, false, observationCurrent), observationCurrent);
         if (!observationCurrent()) return { current: false, saved: false, reason: "cancelled" };
         if (same.outcome === "ready" && same.value) {
@@ -1732,6 +1751,7 @@ export class ObsidianSourceAcquisition {
         let environmentMaintenanceFenced = this.uncertainResolution || this.environmentMaintenancePending;
         this.uncertainResolution = false; this.environmentMaintenancePending = false;
         const movedPaths = new Set<string>();
+        this.startupDiagnostics?.recordWork("sourceInventoryPasses");
         this.startupDiagnostics?.phase("source", "source-inventory");
         const markdown = this.app.vault.getMarkdownFiles();
         const structuralOrder = structuralMarkdownSourceOrder(this.app.vault);

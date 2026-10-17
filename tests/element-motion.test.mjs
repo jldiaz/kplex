@@ -29,3 +29,33 @@ test('element motion retires repeated transforms and restores actual scaled layo
   assert.deepEqual(result.interrupted,result.baseline);assert.deepEqual(result.complete,result.baseline);
  }finally{await browser.cleanup()}
 });
+
+/** Compare real paused Web Animations, including global easing, against the exact owned numeric poses. */
+test('tracked center poses match browser interpolation at every arrival segment and never survive replacement',async()=>{
+ const browser=await chromiumHarness(await browserBundle(['src/ui/components/ElementMotion.ts','src/ui/components/centerArrival.ts']));
+ try{
+  const result=await browser.evaluate(`(async()=>{
+   const {ElementMotion,centerArrivalFrames}=window.sourceModules,motion=new ElementMotion();let comparisons=0,maxError=0;
+   const parent=document.createElement('div'),node=document.createElement('div');parent.append(node);document.body.append(parent);
+   parent.style.cssText='position:absolute;left:0;top:0;transform-origin:0 0';node.style.cssText='position:absolute;left:30px;top:40px;width:123px;height:37px;transform-origin:27px 11px';
+   for(const scale of [.3,.7,1,2,2.6])for(const curved of [true,false]){
+    motion.cancelAll();parent.style.transform='translate(100px,70px) scale('+scale+')';const target=node.getBoundingClientRect(),poses=[];
+    const frames=curved?centerArrivalFrames({left:target.left-87,top:target.top+43,width:target.width*1.4,height:target.height*.8},target,scale,poses):[{transform:'translate(0px,-22px) scale(.92)'},{transform:'translate(0px,0px) scale(1)'}];
+    if(!curved)poses.push({offset:0,x:0,y:-22,scaleX:.92,scaleY:.92,originX:27,originY:11},{offset:1,x:0,y:0,scaleX:1,scaleY:1,originX:27,originY:11});
+    const animation=motion.play(node,frames,{duration:1000,easing:'cubic-bezier(.2,.72,.22,1)'},poses);animation.pause();await animation.ready;
+    for(const time of [0,.15,.35,.5,.65,.85,.99]){
+     animation.currentTime=time*1000;const pose=motion.sample(node),rect=node.getBoundingClientRect();if(!pose)throw Error('Missing active pose');
+     const x=target.left+(pose.originX+(target.width/scale/2-pose.originX)*pose.scaleX+pose.x)*scale;
+     const y=target.top+(pose.originY+(target.height/scale/2-pose.originY)*pose.scaleY+pose.y)*scale;
+     maxError=Math.max(maxError,Math.abs(rect.left+rect.width/2-x),Math.abs(rect.top+rect.height/2-y));comparisons++;
+    }
+   }
+   motion.cancelAll();if(motion.sample(node)||motion.isRunning(node))throw Error('Canceled pose retained');
+   const poses=[{offset:0,x:0,y:0,scaleX:1,scaleY:1,originX:0,originY:0},{offset:1,x:10,y:0,scaleX:1,scaleY:1,originX:0,originY:0}];
+   const old=motion.play(node,[{transform:'translateX(0)'},{transform:'translateX(10px)'}],{duration:1000},poses);
+   const newer=motion.play(node,[{transform:'translateX(0)'},{transform:'translateX(10px)'}],{duration:1000},poses);newer.pause();await newer.ready;newer.currentTime=500;await Promise.resolve();if(!motion.sample(node)||old.playState!=='idle')throw Error('Retired completion erased replacement');
+   motion.cancelAll();parent.remove();return{comparisons,maxError,retired:!motion.sample(node)&&!motion.isRunning()};
+  })()`);
+  assert.equal(result.comparisons,70);assert(result.maxError<.03,JSON.stringify(result));assert(result.retired);
+ }finally{await browser.cleanup()}
+});

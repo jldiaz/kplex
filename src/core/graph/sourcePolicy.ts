@@ -5,6 +5,8 @@
  * Unconfigured physical URL references remain inferred, while dormant
  * internal references and payload chunks are validated and discarded. No host lookup,
  * Markdown parsing, persistence or publication is performed here.
+ * Reciprocal field mappings expand only in the six directional relationship groups; Hidden keeps
+ * literal names, and ordinary single-field spelling/normalization remains historically exact.
  */
 import { normalizeFieldName, parseHierarchyFieldMapping } from "../contracts/fieldName";
 import { oppositeOntologyRole, type EvidenceRole } from "./evidence";
@@ -78,7 +80,7 @@ export class ReferencePolicySelector {
       [policy.hierarchy.next, "next"],
     ];
     const exact = new Map<string, ReferenceAssignment[]>();
-    const registerAssignment = (
+    const registerAssignment = /** Retain physical labels and multiplicity while sharing one normalized lookup. */ (
       configuredFieldName: string,
       normalizedFieldName: string,
       role: EvidenceRole,
@@ -103,7 +105,7 @@ export class ReferencePolicySelector {
 
     for (const [fields, role] of groups) {
       for (const entry of fields) {
-        const mapping = parseHierarchyFieldMapping(entry);
+        const mapping = parseHierarchyFieldMapping(entry, role !== "hidden");
         if (!mapping.normalizedForward) continue;
         const reciprocalRole = mapping.inverse ? oppositeOntologyRole(role) : null;
         registerAssignment(

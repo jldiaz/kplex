@@ -17,22 +17,43 @@
  * storage failure from saved changes whose presentation/manager refresh still needs recovery.
  * File-deletion cleanup is a local workflow preference with a stable native settings anchor;
  * changing it does not invalidate semantic data or change placeholder-removal policy.
+ * Typed color sources retain literal alpha and named/theme identity; local palette preferences
+ * are isolated from foreign graph imports and unsupported formats retain a persistence marker.
+ * Hover modifier requirements are local workflow preferences, independent of themes and graph data;
+ * absent or malformed values enable gating while explicit saved false values remain respected.
  */
+import { readObsidianPresentationEnvironment } from "./adapters/obsidian/presentationEnvironment";
+import { formatShortcut } from "./core/plex/shortcutPresentation";
+import {AppearanceThemesManagerModal} from "./ui/AppearanceThemesModal";
+import {StyleManagerList} from "./ui/StyleManagerList";
+import {ColorSwatchList, type ColorSwatchItem} from "./ui/ColorSwatchList";
+import { StyleSwatchScope } from "./ui/StyleSwatchScope";
+import {colorValueCss} from "./adapters/obsidian/colorPresentation";
+import { subscribeAppearanceSources } from "./adapters/obsidian/colorChanges";
+
+import { StyleEditorModal, appendIcon, type StyleCommitResult } from "./ui/StyleEditorModal";
+import { NATIVE_NODE_PAINT, NATIVE_LINK_STROKE, NATIVE_LINK_TEXT, NATIVE_CANVAS_FILL, nodeColorFallback, nodePaintFallbacks } from "./index/style";
+import { ColorAdoptionModal } from "./ui/ColorAdoptionModal";
+import { StyleColorControls, compassSwatchItem, type StyleColorContext } from "./ui/StyleColorControls";
+import { ColorPaletteModal } from "./ui/ColorPaletteModal";
+import { standardColorSlots, adoptStandardThemeColors, withoutStyleColorOverrides, mergeStyleDraft, requireNamedColor, STANDARD_NODE_COLOR_STYLES, STANDARD_LINK_COLOR_STYLES } from "./core/plex/colorEditing";
+import {COMPASS_DIRECTIONS, SEMANTIC_COLOR_DEFAULTS} from "./core/plex/colorPreferences";
+import { ColorSourceModal } from "./ui/ColorSourceModal";
 import {
   AbstractInputSuggest,
   App,
   Modal,
   Notice,
   PluginSettingTab,
-  getIcon,
   getIconIds,
   type SettingDefinitionItem,
+  type SettingDefinition,
   type Setting,
 } from "obsidian";
 import type KplexPlugin from "./main";
-import type { Arrowhead, Hierarchy, LinkStyle, NodeStyle, Role } from "./types";
 import { parseHierarchyFieldMapping } from "./core/contracts/fieldName";
-import { oppositeOntologyRole, type EvidenceRole } from "./core/graph/evidence";
+import { oppositeOntologyRole } from "./core/graph/evidence";
+import { RelationType, type Arrowhead, type Hierarchy, type LinkStyle, type NodeStyle, type Role } from "./types";
 import { sanitizeGraphLensDefinitions, type GraphLensDefinition } from "./lens/GraphLens";
 import { collectionWindow } from "./ui/components/collectionWindow";
 import { createObsidianTranslator } from "./adapters/obsidian/localization";
@@ -46,8 +67,12 @@ import { sanitizeDatePropertyRelations, type DatePropertyRelations } from "./cor
 import { effectiveTypography, sanitizeTypographyProfiles, sanitizeTypographyValue, TYPOGRAPHY_FIELDS, TYPOGRAPHY_LIMITS, type TypographyProfiles, type TypographyField } from "./core/plex/typographyPreferences";
 import type { PersistedLayoutDeviceClass } from "./core/plex/viewPresentation";
 import { sanitizeMarkdownZoomModes, type MarkdownZoomModes } from "./core/plex/markdownZoomPreferences";
+import { STYLE_SETTINGS_KEYS, appearanceColorReferences, appearanceHasUnsupportedColors } from "./core/contracts/appearance";
+import {applyThemeAppearance, captureThemeAppearance, readAppearanceThemes, resetAppearanceColors, semanticColorSlots, DEFAULT_THEME_ID, type ColorResetScope, type AppearanceThemeLibrary, type AppearanceOwner} from "./core/plex/appearanceThemes";
+import { defaultColorPreferences, migrateColorPreferences, SEMANTIC_COLOR_SLOTS, type SemanticColorSlot, type SemanticColorPair, type ColorPreferencesV1 } from "./core/plex/colorPreferences";
+import { NODE_COLOR_FIELDS, LINK_COLOR_FIELDS, colorValuesEqual, colorIdentityText, colorRgbInput, type ColorValue } from "./core/contracts/colorValue";
 
-export const DEFAULT_LINK_STYLE: LinkStyle = {
+const LEGACY_LINK_STYLE: LinkStyle = {
   strokeColor: "#696969ff",
   strokeWidth: 1,
   strokeStyle: "solid",
@@ -60,7 +85,7 @@ export const DEFAULT_LINK_STYLE: LinkStyle = {
   textColor: "#ffffffff"
 };
 
-export const DEFAULT_NODE_STYLE: NodeStyle = {
+const LEGACY_NODE_STYLE: NodeStyle = {
   prefix: "",
   backgroundColor: "#00000066",
   fillStyle: "solid",
@@ -81,6 +106,10 @@ export const DEFAULT_NODE_STYLE: NodeStyle = {
   gateBackgroundColor: "#ffffffff",
   gateFillStyle: "solid"
 };
+
+/** Fresh styles inherit native colors; historical baselines remain available only to legacy loading. */
+export const DEFAULT_NODE_STYLE = withoutStyleColorOverrides(LEGACY_NODE_STYLE, NODE_COLOR_FIELDS);
+export const DEFAULT_LINK_STYLE = withoutStyleColorOverrides(LEGACY_LINK_STYLE, LINK_COLOR_FIELDS);
 
 export const DEFAULT_HIERARCHY_DEFINITION: Hierarchy = {
   exclusions: [
@@ -147,6 +176,14 @@ export const DEFAULT_LAYOUT_PROFILES: Record<string, KplexLayoutProfile> = {
 };
 
 export interface KplexSettings {
+  /** Local appearance identities; foreign graph imports never replace this palette or compass preference. */
+  colorPreferences: ColorPreferencesV1;
+  /** Preserve an unsupported future color container verbatim while presenting read-only fallback controls. */
+  colorPreferencesFuture?: unknown;
+  /** Versioned private appearance library; effective root fields contain only its selected theme. */
+  appearanceThemes?: AppearanceThemeLibrary;
+  /** Preserve unsupported library data verbatim; appearance edits remain read-only. */
+  appearanceThemesFuture?: unknown;
   /** Plex-local bindings; null disables an action without affecting Obsidian command hotkeys. */
   internalHotkeys: InternalHotkeys;
   /** Independent local bindings and desired Obsidian command publication; workflow-only state. */
@@ -176,7 +213,11 @@ export interface KplexSettings {
   /** Ordered comma-separated frontmatter fields used as display-name fallbacks. */
   nameFields: string;
   nodeTitleScript: string;
-  backgroundColor: string;
+  backgroundColor?: ColorValue;
+  /** Absence policy only: explicit saved colors always remain authoritative. */
+  standardStyleDefaults: "native" | "legacy";
+  /** Runtime-only preservation of unsupported known lens colors; omitted by the writer. */
+  graphLensesColorFuture?: unknown;
   excludeFilepaths: string[];
   autoOpenCentralDocument: boolean;
   toggleEmbedTogglesAutoOpen: boolean;
@@ -267,6 +308,10 @@ export interface KplexSettings {
   pinnedNodes: string[];
   layoutProfiles: Record<string, KplexLayoutProfile>;
   mouseInteractionMode: MouseInteractionMode;
+  /** Require the alternate modifier instead of delayed pointer highlighting. */
+  hoverHighlightRequiresAlt: boolean;
+  /** Require the alternate modifier for area hover outlines outside explicit area-settings mode. */
+  areaOutlineRequiresAlt: boolean;
   toolbarExpanded: boolean;
   sidecarOpen: boolean;
   sidecarPosition: SidecarPosition;
@@ -306,7 +351,9 @@ export interface KplexSettings {
   removeOntologyLinksOnDelete: boolean;
 }
 
-export const DEFAULT_SETTINGS: KplexSettings = {
+const LEGACY_DEFAULT_SETTINGS: KplexSettings = {
+  standardStyleDefaults: "legacy",
+  colorPreferences: defaultColorPreferences(),
   internalHotkeys: sanitizeInternalHotkeys(undefined),
   actionPreferences: migrateActionPreferences(undefined).preferences,
   compactView: false,
@@ -347,7 +394,7 @@ export const DEFAULT_SETTINGS: KplexSettings = {
   siblingRelativeSize: 85,
   crossLinkOpacity: 85,
   applyPowerFilter: false,
-  baseNodeStyle: DEFAULT_NODE_STYLE,
+  baseNodeStyle: LEGACY_NODE_STYLE,
   centralNodeStyle: { fontSize: 30, maxWidth: 370, backgroundColor: "#b5b5b5ff", textColor: "#000000ff" },
   inferredNodeStyle: { backgroundColor: "#000005b3", textColor: "#95c7f3ff" },
   urlNodeStyle: { icon: "globe" },
@@ -361,7 +408,7 @@ export const DEFAULT_SETTINGS: KplexSettings = {
   primaryTagField: "Note type",
   primaryTagFieldLowerCase: "note-type",
   displayAllStylePrefixes: true,
-  baseLinkStyle: DEFAULT_LINK_STYLE,
+  baseLinkStyle: LEGACY_LINK_STYLE,
   inferredLinkStyle: { strokeStyle: "dashed" },
   folderLinkStyle: { strokeColor: "#ffd700ff" },
   tagLinkStyle: { strokeColor: "#4682b4ff" },
@@ -406,6 +453,8 @@ export const DEFAULT_SETTINGS: KplexSettings = {
   pinnedNodes: [],
   layoutProfiles: DEFAULT_LAYOUT_PROFILES,
   mouseInteractionMode: "smart",
+  hoverHighlightRequiresAlt: true,
+  areaOutlineRequiresAlt: true,
   toolbarExpanded: false,
   sidecarOpen: false,
   sidecarPosition: "right",
@@ -428,6 +477,11 @@ export const DEFAULT_SETTINGS: KplexSettings = {
   confirmFileDelete: true,
   removeOntologyLinksOnDelete: true,
 };
+
+/** Fresh installations inherit native paint while preserving established geometry and behavior. */
+export const DEFAULT_SETTINGS: KplexSettings = (() => {
+  const settings = structuredClone(LEGACY_DEFAULT_SETTINGS); adoptStandardThemeColors(settings); return settings;
+})();
 
 const norm = (value: string) => value.toLowerCase().replaceAll(" ", "-").trim();
 
@@ -476,13 +530,23 @@ export function importExcaliBrainGraphSettings(raw: unknown, current?: KplexSett
   const imported = structuredClone(Object.fromEntries(LEGACY_GRAPH_SETTING_KEYS
     .filter((key) => Object.prototype.hasOwnProperty.call(source, key))
     .map((key) => [key, source[key]])));
+  // Normalize only supplied foreign standard records against their historical missing-field defaults.
+  for (const key of [...STANDARD_NODE_COLOR_STYLES, ...STANDARD_LINK_COLOR_STYLES]) if (isSettingsRecord(imported[key]))
+    imported[key] = {...LEGACY_DEFAULT_SETTINGS[key], ...imported[key]};
   const hierarchy = isSettingsRecord(imported.hierarchy) ? imported.hierarchy : {};
   // A legacy friends-only field must replace the local leftFriends default, not be masked by it.
   const leftFriends = hierarchy.leftFriends ?? hierarchy.friends ?? current?.hierarchy.leftFriends;
-  return migrateAndMergeSettings({
+  const settings = migrateAndMergeSettings({
     ...current,
     ...imported,
+    // Foreign appearance must be normalized before the selected local theme is synchronized by
+    // the existing writer. Applying that old theme here would silently undo the imported paint.
+    appearanceThemes: undefined,
+    standardStyleDefaults: current?.standardStyleDefaults ?? "legacy",
+    ...(current?.graphLensesColorFuture !== undefined ? {graphLenses: current.graphLensesColorFuture} : {}),
     actionPreferences: current?.actionPreferences ?? DEFAULT_SETTINGS.actionPreferences,
+    colorPreferences: current?.colorPreferencesFuture !== undefined ? current.colorPreferencesFuture
+      : current?.colorPreferences ?? DEFAULT_SETTINGS.colorPreferences,
     horizontalCompactingFactor: imported.compactingFactor ?? current?.horizontalCompactingFactor,
     hierarchy: {
       ...current?.hierarchy,
@@ -490,6 +554,10 @@ export function importExcaliBrainGraphSettings(raw: unknown, current?: KplexSett
       ...(leftFriends === undefined ? {} : { leftFriends }),
     },
   });
+  delete settings.appearanceThemes;
+  if (current?.appearanceThemes) settings.appearanceThemes = structuredClone(current.appearanceThemes);
+  if (current?.appearanceThemesFuture !== undefined) settings.appearanceThemesFuture = structuredClone(current.appearanceThemesFuture);
+  return settings;
 }
 
 /** Normalize this plugin's persisted settings, preserving K-Plex preferences across reloads. */
@@ -500,8 +568,13 @@ export function migrateAndMergeSettings(raw: unknown): KplexSettings {
     excalibrainFilepath?: unknown;
   };
   // Both values belonged to retired render surfaces and carry no K-Plex state.
-  const { maxZoom: _legacyMaxZoom, excalibrainFilepath: _legacyDrawingPath, actionPreferencesFuture: _runtimeFuture, ...old } = rawSettings;
+  const { maxZoom: _legacyMaxZoom, excalibrainFilepath: _legacyDrawingPath, actionPreferencesFuture: _runtimeFuture,
+    colorPreferencesFuture: _runtimeColorFuture, graphLensesColorFuture: _runtimeLensColorFuture,
+    appearanceThemesFuture: _runtimeThemesFuture, ...old } = rawSettings;
   const actionPreferences = migrateActionPreferences(raw);
+  const colors = migrateColorPreferences(old.colorPreferences);
+  const defaults = old.standardStyleDefaults === "native" || Object.keys(old).length === 0 ? DEFAULT_SETTINGS : LEGACY_DEFAULT_SETTINGS;
+  const futureLensColors = appearanceHasUnsupportedColors({graphLenses: old.graphLenses});
   const hierarchyRaw: Partial<Hierarchy> = old.hierarchy ?? {};
   const hierarchy: Hierarchy = {
     ...DEFAULT_HIERARCHY_DEFINITION,
@@ -569,28 +642,32 @@ export function migrateAndMergeSettings(raw: unknown): KplexSettings {
     : oldSyncMode === "kplex-to-leaf" || oldSyncMode === "leaf-to-kplex" || oldSyncMode === "two-way" || Boolean(old.autoOpenCentralDocument) || Boolean(old.followActiveFile)
       ? "recent" : "off";
 
-  return {
-    ...DEFAULT_SETTINGS,
+  const settings: KplexSettings = {
+    ...defaults,
+    standardStyleDefaults: defaults.standardStyleDefaults,
+    ...(futureLensColors ? {graphLensesColorFuture: structuredClone(old.graphLenses)} : {}),
     ...old,
+    colorPreferences: colors.preferences,
+    ...(colors.future !== undefined ? { colorPreferencesFuture: colors.future } : {}),
     showCrossLinks: typeof old.showCrossLinks === "boolean" ? old.showCrossLinks : DEFAULT_SETTINGS.showCrossLinks,
     indexingMode: old.indexingMode === "eager" ? "eager" : "on-demand",
     urlIndexingMode: "background",
     indexingThrottle: sanitizeIndexingThrottle(old.indexingThrottle),
     datePropertyRelations: sanitizeDatePropertyRelations(old.datePropertyRelations),
     hierarchy,
-    baseNodeStyle: { ...DEFAULT_NODE_STYLE, ...(old.baseNodeStyle ?? {}) },
-    baseLinkStyle: { ...DEFAULT_LINK_STYLE, ...(old.baseLinkStyle ?? {}) },
-    centralNodeStyle: { ...DEFAULT_SETTINGS.centralNodeStyle, ...(old.centralNodeStyle ?? {}) },
-    inferredNodeStyle: { ...DEFAULT_SETTINGS.inferredNodeStyle, ...(old.inferredNodeStyle ?? {}) },
-    urlNodeStyle: mergeLegacyIconStyle(DEFAULT_SETTINGS.urlNodeStyle, old.urlNodeStyle, "🌐 "),
-    virtualNodeStyle: { ...DEFAULT_SETTINGS.virtualNodeStyle, ...(old.virtualNodeStyle ?? {}) },
-    siblingNodeStyle: { ...DEFAULT_SETTINGS.siblingNodeStyle, ...(old.siblingNodeStyle ?? {}) },
-    attachmentNodeStyle: mergeLegacyIconStyle(DEFAULT_SETTINGS.attachmentNodeStyle, old.attachmentNodeStyle, "📎 "),
-    folderNodeStyle: mergeLegacyIconStyle(DEFAULT_SETTINGS.folderNodeStyle, old.folderNodeStyle, "📂 "),
-    tagNodeStyle: mergeLegacyIconStyle(DEFAULT_SETTINGS.tagNodeStyle, old.tagNodeStyle, "#"),
-    inferredLinkStyle: { ...DEFAULT_SETTINGS.inferredLinkStyle, ...(old.inferredLinkStyle ?? {}) },
-    folderLinkStyle: { ...DEFAULT_SETTINGS.folderLinkStyle, ...(old.folderLinkStyle ?? {}) },
-    tagLinkStyle: { ...DEFAULT_SETTINGS.tagLinkStyle, ...(old.tagLinkStyle ?? {}) },
+    baseNodeStyle: { ...defaults.baseNodeStyle, ...(old.baseNodeStyle ?? {}) },
+    baseLinkStyle: { ...defaults.baseLinkStyle, ...(old.baseLinkStyle ?? {}) },
+    centralNodeStyle: { ...defaults.centralNodeStyle, ...(old.centralNodeStyle ?? {}) },
+    inferredNodeStyle: { ...defaults.inferredNodeStyle, ...(old.inferredNodeStyle ?? {}) },
+    urlNodeStyle: mergeLegacyIconStyle(defaults.urlNodeStyle, old.urlNodeStyle, "🌐 "),
+    virtualNodeStyle: { ...defaults.virtualNodeStyle, ...(old.virtualNodeStyle ?? {}) },
+    siblingNodeStyle: { ...defaults.siblingNodeStyle, ...(old.siblingNodeStyle ?? {}) },
+    attachmentNodeStyle: mergeLegacyIconStyle(defaults.attachmentNodeStyle, old.attachmentNodeStyle, "📎 "),
+    folderNodeStyle: mergeLegacyIconStyle(defaults.folderNodeStyle, old.folderNodeStyle, "📂 "),
+    tagNodeStyle: mergeLegacyIconStyle(defaults.tagNodeStyle, old.tagNodeStyle, "#"),
+    inferredLinkStyle: { ...defaults.inferredLinkStyle, ...(old.inferredLinkStyle ?? {}) },
+    folderLinkStyle: { ...defaults.folderLinkStyle, ...(old.folderLinkStyle ?? {}) },
+    tagLinkStyle: { ...defaults.tagLinkStyle, ...(old.tagLinkStyle ?? {}) },
     tagNodeStyles: old.tagNodeStyles ?? {},
     tagStyleList: old.tagStyleList ?? [],
     noteTypeStyles: old.noteTypeStyles ?? {},
@@ -622,6 +699,8 @@ export function migrateAndMergeSettings(raw: unknown): KplexSettings {
     pinnedNodes: Array.isArray(old.pinnedNodes) ? old.pinnedNodes.filter((value): value is string => typeof value === "string") : [],
     layoutProfiles: migratedProfiles,
     typographyProfiles: sanitizeTypographyProfiles(old.typographyProfiles),
+    hoverHighlightRequiresAlt: typeof old.hoverHighlightRequiresAlt === "boolean" ? old.hoverHighlightRequiresAlt : true,
+    areaOutlineRequiresAlt: typeof old.areaOutlineRequiresAlt === "boolean" ? old.areaOutlineRequiresAlt : true,
     mouseInteractionMode: old.mouseInteractionMode === "legacy" || old.mouseInteractionMode === "middle-only" ? old.mouseInteractionMode : "smart",
     // ExcaliBrain persisted `embedCentralNode` for its own center presentation. K-Plex's native
     // embedded editor is a different, explicitly opt-in surface, so legacy imports must start
@@ -666,6 +745,21 @@ export function migrateAndMergeSettings(raw: unknown): KplexSettings {
     autoOpenCentralDocument: documentSyncMode !== "off",
     followActiveFile: documentSyncMode !== "off",
   };
+  if (old.appearanceThemes !== undefined) {
+    const library = readAppearanceThemes(old.appearanceThemes);
+    if (library && colors.future === undefined && !futureLensColors && !appearanceHasUnsupportedColors(old)) {
+      // Factory appearance always follows current native defaults, never a persisted RGB capture.
+      const factory = library.themes.find(/** Stable identity alone identifies the immutable factory entry. */ theme => theme.id === DEFAULT_THEME_ID);
+      if (factory) factory.appearance = captureThemeAppearance(DEFAULT_SETTINGS);
+      settings.appearanceThemes = library;
+      const selected = library.themes.find(/** Apply only the explicitly selected private appearance. */ theme => theme.id === library.selectedId);
+      if (selected) applyThemeAppearance(settings, selected.appearance);
+    } else {
+      delete settings.appearanceThemes;
+      settings.appearanceThemesFuture = structuredClone(old.appearanceThemes);
+    }
+  }
+  return settings;
 }
 
 const csv = (value: string[]) => value.join(", ");
@@ -678,29 +772,11 @@ const normalizeTagStylePrefix = (value: string): string => {
   const prefix = value.trim().replace(/^#+/, "").trim();
   return prefix ? `#${prefix}` : "";
 };
-const sixHex = (value?: string, fallback = "#000000") => /^#[0-9a-f]{6}/i.test(value ?? "") ? (value as string).slice(0, 7) : fallback;
+/** Legacy RGB-only control adapter; it cannot flatten a reference or mutate the saved source. */
+const sixHex = (value?: ColorValue, fallback = "#000000"): string => {
+  return colorRgbInput(value, fallback);
+};
 const eightHex = (value: string) => `${value.slice(0, 7)}ff`;
-
-/** Native color pickers normalize RGB case and cannot edit alpha. Preserve untouched/inherited colors and the existing alpha when only RGB changes. */
-const nodeStyleColor = (value: string, previous: string | undefined, fallback: string): string | undefined => {
-  if (value.toLowerCase() === sixHex(previous, fallback).toLowerCase()) return previous;
-  const alpha = previous?.match(/^#[0-9a-f]{6}([0-9a-f]{2})$/i)?.[1] ?? "ff";
-  return `${value.slice(0, 7)}${alpha}`;
-};
-const canonicalHex = (value: unknown): string | null => {
-  if (typeof value !== "string") return null;
-  const lower = value.trim().toLowerCase();
-  if (/^#[0-9a-f]{6}$/.test(lower)) return `${lower}ff`;
-  if (/^#[0-9a-f]{8}$/.test(lower)) return lower;
-  return lower || null;
-};
-
-function appendIcon(button: HTMLElement, name: string): void {
-  const icon = getIcon(name);
-  if (!icon) return;
-  icon.classList.add("kplex-lucide");
-  button.prepend(icon);
-}
 
 type OntologyStyleField = { name: string; roles: Role[] };
 type NodeStyleKind = "property" | "tag";
@@ -802,7 +878,7 @@ const hasMeaningfulLinkOverride = (style: LinkStyle | undefined, baseStyle: Link
   return LINK_STYLE_KEYS.some((key) => {
     if (style[key] === undefined) return false;
     if (key === "strokeColor" || key === "textColor") {
-      return canonicalHex(style[key]) !== canonicalHex(baseStyle[key]);
+      return !colorValuesEqual(style[key], baseStyle[key]);
     }
     return style[key] !== baseStyle[key];
   });
@@ -833,14 +909,14 @@ const arrowheadLabel = (arrowhead: Arrowhead, translate: Translator): string => 
 };
 
 /** Summarize the effective link-style overrides using localized labels and original color/width values. */
-const describeLinkStyle = (style: LinkStyle | undefined, baseStyle: LinkStyle, translate: Translator): string => {
+const describeLinkStyle = (style: LinkStyle | undefined, baseStyle: LinkStyle, translate: Translator, palette: readonly SemanticColorPair[] = []): string => {
   const effective = { ...baseStyle, ...(style ?? {}) };
   const strokeStyle = effective.strokeStyle ?? "solid";
   const strokeKey = strokeStyle === "dashed" ? "styles.dashed" : strokeStyle === "dotted" ? "styles.dotted" : "styles.solid";
   const parts = [
     translate(strokeKey),
     `${effective.strokeWidth ?? 1}px`,
-    sixHex(effective.strokeColor, "#696969"),
+    colorIdentityText(effective.strokeColor, palette),
   ];
   if ((effective.startArrowHead ?? "none") !== "none" || (effective.endArrowHead ?? "none") !== "none") {
     parts.push(`${arrowheadLabel(effective.startArrowHead ?? "none", translate)} → ${arrowheadLabel(effective.endArrowHead ?? "none", translate)}`);
@@ -852,108 +928,35 @@ const describeLinkStyle = (style: LinkStyle | undefined, baseStyle: LinkStyle, t
 };
 
 /** Summarize a node style with localized property labels while preserving its stored visual values. */
-const describeNodeStyle = (style: NodeStyle, translate: Translator): string => {
+const describeNodeStyle = (style: NodeStyle, translate: Translator, palette: readonly SemanticColorPair[] = []): string => {
   const parts: string[] = [];
   if (style.icon) parts.push(translate("styles.summaryIcon", { icon: style.icon }));
   if (style.fontSize) parts.push(`${style.fontSize}px`);
-  if (style.backgroundColor) parts.push(sixHex(style.backgroundColor));
+  if (style.backgroundColor) parts.push(colorIdentityText(style.backgroundColor, palette));
   return parts.length ? parts.join(" · ") : translate("styles.inheritedNodeDefaults");
 };
 
-/** Narrow mutable draft owned exclusively by one queued style-manager operation. */
-export type StyleSettingsDraft = Pick<KplexSettings, "noteTypeStyles" | "tagNodeStyles" | "tagStyleList" | "hierarchyLinkStyles">;
-/** Persistence has succeeded; a failed refresh must never be offered as an unsaved retry. */
-export type StyleCommitResult = Readonly<{ refreshPending: boolean }>;
+/** Appearance fields share the existing serialized style writer; semantic/workflow settings retain their owners. */
+export { STYLE_SETTINGS_KEYS } from "./core/contracts/appearance";
+/** Narrow mutable draft captured from the latest live appearance at one queued operation's boundary. */
+export type StyleSettingsDraft = Pick<KplexSettings, typeof STYLE_SETTINGS_KEYS[number]>;
+export type { StyleCommitResult } from "./ui/StyleEditorModal";
 
-/** Native style-editor shell sharing pending exclusion and truthful completion across both style families. */
-abstract class StyleEditorModal extends Modal {
-  protected readonly translate = createObsidianTranslator();
-  private operationPending = false;
-  private operationCommitted = false;
-  private lifetime = 0;
-  private editorOpen = false;
-  private feedback: HTMLElement | null = null;
-
-  /** Start a fresh editor lifetime; retired asynchronous completions cannot close its replacement. */
-  protected beginEditor(): void {
-    this.lifetime += 1;
-    this.editorOpen = true;
-    this.operationPending = false;
-    this.operationCommitted = false;
-    this.modalEl.setAttribute("aria-busy", "false");
-    this.feedback = this.contentEl.createDiv({ cls: "setting-item-description", attr: { role: "status", "aria-live": "polite" } });
-  }
-
-  /** Submit once, freeze the captured draft and block Cancel/Escape until its durable outcome is known. */
-  protected runOperation(operation: (isCurrent: () => boolean) => Promise<StyleCommitResult>): void {
-    if (this.operationPending || this.operationCommitted || !this.editorOpen) return;
-    const lifetime = this.lifetime;
-    /** External teardown retires UI callbacks but never pretends an already submitted disk write was canceled. */
-    const isCurrent = (): boolean => this.editorOpen && this.lifetime === lifetime
-      && this.modalEl.isConnected && !this.modalEl.ownerDocument.defaultView?.closed;
-    const controls = Array.from(this.contentEl.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"));
-    const disabled = controls.map(/** Restore existing fixed-family and inherited disabled state after a failed save. */ control => control.disabled);
-    this.operationPending = true;
-    this.modalEl.setAttribute("aria-busy", "true");
-    this.feedback?.setText(this.translate("styles.operation.saving"));
-    for (const control of controls) control.disabled = true;
-    /** Separate durable operation failure from UI completion failure so a saved change never becomes an unsaved retry. */
-    const finish = async (): Promise<void> => {
-      let result: StyleCommitResult;
-      try {
-        result = await operation(isCurrent);
-      } catch (error) {
-        console.error("K-Plex style operation was not saved", error);
-        if (!isCurrent()) return;
-        this.operationPending = false;
-        this.modalEl.setAttribute("aria-busy", "false");
-        controls.forEach(/** Only restore this still-live form after persistence rejected. */ (control, index) => { control.disabled = disabled[index]; });
-        this.feedback?.setText(this.translate("styles.operation.notSaved"));
-        return;
-      }
-      if (!isCurrent()) return;
-      this.operationPending = false;
-      this.operationCommitted = true;
-      if (result.refreshPending) {
-        try { new Notice(this.translate("styles.operation.savedRefreshPending")); }
-        catch (error) { console.error("K-Plex saved style recovery notice failed", error); }
-      }
-      try { this.close(); } catch (error) {
-        console.error("K-Plex saved style editor close failed", error);
-        if (!isCurrent()) return;
-        this.modalEl.setAttribute("aria-busy", "false");
-        this.feedback?.setText(this.translate("styles.operation.savedRefreshPending"));
-        for (const control of controls) {
-          // Saved operations cannot run again. Only dismissal is available after a native close failure.
-          if (control.tagName === "BUTTON" && control.textContent === this.translate("common.cancel")) {
-            control.disabled = false;
-            control.setText(this.translate("styles.operation.close"));
-            appendIcon(control, "x");
-          }
-        }
-      }
-    };
-    void finish();
-  }
-
-  /** Native Escape, the close icon and Cancel share the pending-operation exclusion. */
-  close(): void {
-    if (!this.operationPending) super.close();
-  }
-
-  /** Retire the exact form before subclasses remove controls and suggestion popovers. */
-  onClose(): void {
-    this.editorOpen = false;
-    this.operationPending = false;
-    this.lifetime += 1;
-    this.feedback = null;
-  }
+/** Native source captions share one known node-color inventory across standard and custom styles. */
+function nodeColorLabel(field: typeof NODE_COLOR_FIELDS[number]): PlainTranslationKey {
+  return ({backgroundColor: "styles.background", textColor: "styles.text", borderColor: "styles.border",
+    gateStrokeColor: "colors.gateStroke", gateBackgroundColor: "colors.gateFill"} as const)[field];
+}
+/** Link and label paint keep distinct source controls. */
+function linkColorLabel(field: typeof LINK_COLOR_FIELDS[number]): PlainTranslationKey {
+  return field === "strokeColor" ? "styles.lineColor" : "styles.labelColor";
 }
 
 class NodeStyleModal extends StyleEditorModal {
   private static nextFormId = 0;
   private valueSuggest?: NodeStyleValueSuggest;
   private iconSuggest?: LucideIconSuggest;
+  private colors?: StyleColorControls;
 
   /** Edit one fixed style family, or allow an unsaved new style to choose its matching family. */
   constructor(
@@ -965,13 +968,15 @@ class NodeStyleModal extends StyleEditorModal {
     private onSave: (name: string, style: NodeStyle, previousName: string | null, kind: NodeStyleKind, isCurrent: () => boolean) => Promise<StyleCommitResult>,
     private onDelete?: (name: string, isCurrent: () => boolean) => Promise<StyleCommitResult>,
     private initialKind: NodeStyleKind = "property",
+    private colorContext?: StyleColorContext,
+    private onClosed?: () => void,
   ) {
     super(app);
   }
 
   /** Render both matching modes in one form so switching a new style preserves its appearance draft. */
   onOpen(): void {
-    this.beginEditor();
+    this.beginEditor(this.colorContext?.sourceScope, this.colorContext?.bindEditor);
     this.titleEl.setText(this.translate(this.initialName ? "styles.editNode" : "styles.addNode"));
     this.modalEl.addClass("kplex-style-editor-modal");
     this.contentEl.addClass("kplex-style-editor");
@@ -1051,20 +1056,12 @@ class NodeStyleModal extends StyleEditorModal {
     field(this.translate("styles.lucideIcon"), iconInput, this.translate("styles.lucideHelp"));
     this.iconSuggest = new LucideIconSuggest(this.app, iconInput);
 
-    const background = form.createEl("input");
-    background.type = "color";
-    background.value = sixHex(this.initialStyle.backgroundColor, "#182433");
-    field(this.translate("styles.background"), background, this.translate("styles.backgroundHelp"));
-
-    const text = form.createEl("input");
-    text.type = "color";
-    text.value = sixHex(this.initialStyle.textColor, "#ffffff");
-    field(this.translate("styles.text"), text, this.translate("styles.textHelp"));
-
-    const border = form.createEl("input");
-    border.type = "color";
-    border.value = sixHex(this.initialStyle.borderColor, "#6f849a");
-    field(this.translate("styles.border"), border, this.translate("styles.borderHelp"));
+    const colorDraft = {...this.initialStyle};
+    const context = this.colorContext ?? {sourceScope: this.modalEl, translate: this.translate, preferences: defaultColorPreferences,
+      nodeStyle: () => DEFAULT_NODE_STYLE, linkStyle: () => DEFAULT_LINK_STYLE, background: () => undefined};
+    this.colors = new StyleColorControls(this.app, {...context, nodeStyle: () => ({...context.nodeStyle(), ...colorDraft})}, () => this.canEdit());
+    for (const colorField of NODE_COLOR_FIELDS) this.colors.add(form, this.translate(nodeColorLabel(colorField)), {kind: "node", field: colorField},
+      () => colorDraft[colorField], value => { if (value === undefined) delete colorDraft[colorField]; else colorDraft[colorField] = value; }, () => context.nodeStyle()[colorField]);
 
     const fontSize = form.createEl("input");
     fontSize.type = "number";
@@ -1098,18 +1095,15 @@ class NodeStyleModal extends StyleEditorModal {
       // Saving appearance alone must not rewrite legacy key spelling or its matching position.
       const name = kind === "tag" && this.initialName !== null && nameInput.value === this.initialName ? this.initialName : normalized;
       const style: NodeStyle = {
-        ...this.initialStyle,
+        ...colorDraft,
         icon: iconInput.value.trim() || undefined,
-        backgroundColor: nodeStyleColor(background.value, this.initialStyle.backgroundColor, "#182433"),
-        textColor: nodeStyleColor(text.value, this.initialStyle.textColor, "#ffffff"),
-        borderColor: nodeStyleColor(border.value, this.initialStyle.borderColor, "#6f849a"),
         fontSize: fontSize.value === String(this.initialStyle.fontSize ?? 18) ? this.initialStyle.fontSize : Math.max(8, Math.min(40, Number(fontSize.value) || 18)),
         // Keep an absent label prefix inherited unless the user changes the input.
         ...(kind === "tag" && prefixInput.value !== (this.initialStyle.prefix ?? "") ? { prefix: prefixInput.value } : {}),
       };
       this.runOperation(/** Submit the validated appearance draft within this exact modal lifetime. */ isCurrent => this.onSave(name, style, this.initialName, kind, isCurrent));
     });
-    (nameInput.ownerDocument.defaultView ?? window).setTimeout(/** Focus only this still-mounted form after native attachment. */ () => { if (nameInput.isConnected) nameInput.focus(); }, 0);
+    this.focusAfterAttachment(nameInput);
   }
 
   /** Close form-owned suggestion popovers before dropping the native modal's form elements. */
@@ -1117,11 +1111,13 @@ class NodeStyleModal extends StyleEditorModal {
     super.onClose();
     this.valueSuggest?.close();
     this.iconSuggest?.close();
-    this.contentEl.empty();
+    this.colors?.dispose(); this.colors = undefined;
+    this.contentEl.empty(); this.onClosed?.();
   }
 }
 
 class OntologyLinkStyleModal extends StyleEditorModal {
+  private colors?: StyleColorControls;
 
   /** Edit one field's appearance; queued save/reset return a durable outcome independent of manager refresh. */
   constructor(
@@ -1131,13 +1127,15 @@ class OntologyLinkStyleModal extends StyleEditorModal {
     private baseStyle: LinkStyle,
     private onSave: (style: LinkStyle, isCurrent: () => boolean) => Promise<StyleCommitResult>,
     private onReset: (isCurrent: () => boolean) => Promise<StyleCommitResult>,
+    private colorContext?: StyleColorContext,
+    private onClosed?: () => void,
   ) {
     super(app);
   }
 
   /** Render the ontology-link style controls with localized captions and feedback; the native Modal owns its open/close shell. */
   onOpen(): void {
-    this.beginEditor();
+    this.beginEditor(this.colorContext?.sourceScope, this.colorContext?.bindEditor);
     this.titleEl.setText(this.translate("styles.linkEditorTitle", { field: this.fieldName }));
     this.modalEl.addClass("kplex-style-editor-modal");
     this.contentEl.addClass("kplex-style-editor");
@@ -1150,13 +1148,15 @@ class OntologyLinkStyleModal extends StyleEditorModal {
     const field = (label: string, input: HTMLElement) => {
       const row = form.createDiv({ cls: "kplex-style-row" });
       row.createEl("label", { text: label });
-      row.appendChild(input);
+      input.setAttribute("aria-label", label); row.appendChild(input);
     };
 
-    const strokeColor = form.createEl("input");
-    strokeColor.type = "color";
-    strokeColor.value = sixHex(effective.strokeColor, "#696969");
-    field(this.translate("styles.lineColor"), strokeColor);
+    const colorDraft = {...this.initialStyle};
+    const context = this.colorContext ?? {sourceScope: this.modalEl, translate: this.translate, preferences: defaultColorPreferences,
+      nodeStyle: () => DEFAULT_NODE_STYLE, linkStyle: () => this.baseStyle, background: () => undefined};
+    this.colors = new StyleColorControls(this.app, {...context, linkStyle: () => ({...context.linkStyle(), ...colorDraft})}, () => this.canEdit());
+    for (const colorField of LINK_COLOR_FIELDS) this.colors.add(form, this.translate(linkColorLabel(colorField)), {kind: "link", field: colorField},
+      () => colorDraft[colorField], value => { if (value === undefined) delete colorDraft[colorField]; else colorDraft[colorField] = value; }, () => context.linkStyle()[colorField]);
 
     const strokeWidth = form.createEl("input");
     strokeWidth.type = "number";
@@ -1191,11 +1191,6 @@ class OntologyLinkStyleModal extends StyleEditorModal {
     showLabel.checked = effective.showLabel ?? false;
     field(this.translate("styles.showOntologyLabel"), showLabel);
 
-    const textColor = form.createEl("input");
-    textColor.type = "color";
-    textColor.value = sixHex(effective.textColor, "#ffffff");
-    field(this.translate("styles.labelColor"), textColor);
-
     const fontSize = form.createEl("input");
     fontSize.type = "number";
     fontSize.min = "7";
@@ -1203,6 +1198,9 @@ class OntologyLinkStyleModal extends StyleEditorModal {
     fontSize.step = "1";
     fontSize.value = String(effective.fontSize ?? 10);
     field(this.translate("styles.labelSize"), fontSize);
+
+    const openingControls = {width: strokeWidth.value, stroke: strokeStyle.value, start: startArrow.value, end: endArrow.value,
+      label: showLabel.checked, font: fontSize.value};
 
     const actions = this.contentEl.createDiv({ cls: "kplex-style-actions" });
     const reset = actions.createEl("button", { cls: "mod-warning", text: this.translate("styles.reset") });
@@ -1217,15 +1215,13 @@ class OntologyLinkStyleModal extends StyleEditorModal {
     appendIcon(save, "check");
     save.addEventListener("click", /** Capture one appearance override for the durable style owner. */ () => {
       const style: LinkStyle = {
-        ...this.initialStyle,
-        strokeColor: eightHex(strokeColor.value),
-        strokeWidth: Math.max(0.5, Math.min(8, Number(strokeWidth.value) || 1)),
-        strokeStyle: strokeStyle.value === "dashed" || strokeStyle.value === "dotted" ? strokeStyle.value : "solid",
-        startArrowHead: startArrow.value as Arrowhead,
-        endArrowHead: endArrow.value as Arrowhead,
-        showLabel: showLabel.checked,
-        textColor: eightHex(textColor.value),
-        fontSize: Math.max(7, Math.min(24, Number(fontSize.value) || 10)),
+        ...colorDraft,
+        strokeWidth: strokeWidth.value === openingControls.width ? this.initialStyle.strokeWidth : Math.max(0.5, Math.min(8, Number(strokeWidth.value) || 1)),
+        strokeStyle: strokeStyle.value === openingControls.stroke ? this.initialStyle.strokeStyle : strokeStyle.value === "dashed" || strokeStyle.value === "dotted" ? strokeStyle.value : "solid",
+        startArrowHead: startArrow.value === openingControls.start ? this.initialStyle.startArrowHead : startArrow.value as Arrowhead,
+        endArrowHead: endArrow.value === openingControls.end ? this.initialStyle.endArrowHead : endArrow.value as Arrowhead,
+        showLabel: showLabel.checked === openingControls.label ? this.initialStyle.showLabel : showLabel.checked,
+        fontSize: fontSize.value === openingControls.font ? this.initialStyle.fontSize : Math.max(7, Math.min(24, Number(fontSize.value) || 10)),
       };
       this.runOperation(/** Keep completion bound to this exact native form. */ isCurrent => this.onSave(style, isCurrent));
     });
@@ -1234,17 +1230,19 @@ class OntologyLinkStyleModal extends StyleEditorModal {
   /** Retire asynchronous operations before removing the native controls. */
   onClose(): void {
     super.onClose();
-    this.contentEl.empty();
+    this.colors?.dispose(); this.colors = undefined;
+    this.contentEl.empty(); this.onClosed?.();
   }
 }
 
-class OntologyLinkStylesManagerModal extends Modal {
-  private readonly translate = createObsidianTranslator();
+class OntologyLinkStylesManagerModal extends StyleEditorModal {
+  private swatches: StyleSwatchScope | null = null;
+  private releaseColors: (() => void) | null = null;
   private search = "";
   private role: "all" | Role = "all";
   // Modal already owns a `scope: Scope` keyboard-handler property. Keep this UI filter distinct.
   private displayScope: "custom" | "all" = "custom";
-  private visibleLimit = 12;
+  private manager: StyleManagerList | null = null;
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
 
@@ -1254,12 +1252,17 @@ class OntologyLinkStylesManagerModal extends Modal {
     private getStyle: (fieldName: string) => LinkStyle | undefined,
     private baseStyle: LinkStyle,
     private onEdit: (fieldName: string, afterChange: () => void) => void,
+    private colorContext?: StyleColorContext,
+    private onClosed?: () => void,
   ) {
     super(app);
   }
 
   /** Render the searchable ontology-link style manager with localized captions and feedback; the native Modal owns its open/close shell. */
   onOpen(): void {
+    this.beginEditor(this.colorContext?.sourceScope, this.colorContext?.bindEditor);
+    this.swatches = new StyleSwatchScope(this.contentEl, this.colorContext ?? {preferences: defaultColorPreferences});
+    this.releaseColors = this.colorContext?.subscribeColors?.(() => this.renderList()) ?? null;
     this.titleEl.setText(this.translate("styles.relationshipTitle"));
     this.modalEl.addClass("kplex-style-manager-modal");
     this.contentEl.addClass("kplex-style-manager");
@@ -1267,16 +1270,10 @@ class OntologyLinkStylesManagerModal extends Modal {
       text: this.translate("styles.relationshipHelp"),
     });
 
-    const controls = this.contentEl.createDiv({ cls: "kplex-style-manager-controls" });
-    const searchWrap = controls.createDiv({ cls: "search-input-container kplex-style-manager-search" });
-    const search = searchWrap.createEl("input", {
-      attr: { type: "search", placeholder: this.translate("styles.searchRelationshipPlaceholder"), "aria-label": this.translate("styles.searchRelationshipAria") },
-    });
-    search.addEventListener("input", () => {
-      this.search = search.value.trim().toLowerCase();
-      this.visibleLimit = 12;
-      this.renderList();
-    });
+    this.manager = new StyleManagerList(this.contentEl, this.translate,
+      {placeholder: this.translate("styles.searchRelationshipPlaceholder"), aria: this.translate("styles.searchRelationshipAria")},
+      /** Search mechanics are shared; this manager retains its domain filters and entries. */ query => {this.search = query; this.renderList();});
+    const controls = this.manager.controls, search = this.manager.search;
 
     const scope = controls.createEl("select", { attr: { "aria-label": this.translate("styles.linkStyleScope"), "data-kplex-style-scope": "true" } });
     scope.createEl("option", { text: this.translate("styles.customStyles"), attr: { value: "custom" } });
@@ -1284,7 +1281,7 @@ class OntologyLinkStylesManagerModal extends Modal {
     scope.value = this.displayScope;
     scope.addEventListener("change", () => {
       this.displayScope = scope.value === "all" ? "all" : "custom";
-      this.visibleLimit = 12;
+      this.manager?.reset();
       this.renderList();
     });
 
@@ -1296,29 +1293,30 @@ class OntologyLinkStylesManagerModal extends Modal {
     }
     role.addEventListener("change", () => {
       this.role = role.value === "all" ? "all" : role.value as Role;
-      this.visibleLimit = 12;
+      this.manager?.reset();
       this.renderList();
     });
 
-    this.statusEl = this.contentEl.createDiv({ cls: "kplex-style-manager-status" });
-    this.listEl = this.contentEl.createDiv({ cls: "kplex-style-manager-list" });
+    this.statusEl = this.manager.status;
+    this.listEl = this.manager.list;
     this.renderList();
-    window.setTimeout(() => search.focus(), 0);
+    this.focusAfterAttachment(search);
   }
 
   /** Rebuild the searchable ontology-link style manager entries with localized status/actions while preserving actual field and style values. */
   private renderList(): void {
-    if (!this.listEl || !this.statusEl) return;
+    if (!this.canEdit() || !this.listEl || !this.statusEl || !this.manager) return;
+    const baseStyle = this.colorContext?.linkStyle() ?? this.baseStyle;
     this.listEl.empty();
 
     const matches = this.fields.filter((field) => {
       const style = this.getStyle(field.name);
-      if (this.displayScope === "custom" && !hasMeaningfulLinkOverride(style, this.baseStyle)) return false;
+      if (this.displayScope === "custom" && !hasMeaningfulLinkOverride(style, baseStyle)) return false;
       if (this.role !== "all" && !field.roles.includes(this.role)) return false;
       if (this.search && !`${field.name} ${field.roles.join(" ")}`.toLowerCase().includes(this.search)) return false;
       return true;
     });
-    const customCount = this.fields.filter((field) => hasMeaningfulLinkOverride(this.getStyle(field.name), this.baseStyle)).length;
+    const customCount = this.fields.filter((field) => hasMeaningfulLinkOverride(this.getStyle(field.name), baseStyle)).length;
     const scopeCount = this.displayScope === "custom" ? customCount : this.fields.length;
     const statusKey = this.displayScope === "custom"
       ? (scopeCount === 1 ? (matches.length === 1 ? "styles.statusCustom11" : "styles.statusCustom1n") : (matches.length === 1 ? "styles.statusCustomn1" : "styles.statusCustomnn"))
@@ -1326,6 +1324,7 @@ class OntologyLinkStylesManagerModal extends Modal {
     this.statusEl.setText(this.translate(statusKey, { scopeCount, matches: matches.length }));
 
     if (!matches.length) {
+      this.swatches?.dispose();
       const empty = this.listEl.createDiv({ cls: "kplex-style-manager-empty" });
       empty.createEl("p", {
         text: this.translate(this.displayScope === "custom" ? "styles.noCustomMatches" : "styles.noRelationshipMatches"),
@@ -1342,51 +1341,42 @@ class OntologyLinkStylesManagerModal extends Modal {
       return;
     }
 
-    const windowed = collectionWindow(matches, this.visibleLimit, 20);
+    const windowed = this.manager.window(matches);
+    this.swatches?.update(appearanceColorReferences({hierarchyLinkStyles: Object.fromEntries(windowed.visible.map(field => [field.name, {...baseStyle, ...this.getStyle(field.name)}]))}));
     for (const field of windowed.visible) {
       const style = this.getStyle(field.name);
-      const customized = hasMeaningfulLinkOverride(style, this.baseStyle);
-      const effective = { ...this.baseStyle, ...(style ?? {}) };
-      const row = this.listEl.createEl("button", { cls: "kplex-style-manager-row" });
-      row.type = "button";
+      const customized = hasMeaningfulLinkOverride(style, baseStyle);
+      const effective = { ...baseStyle, ...(style ?? {}) };
+      const row = this.manager.row(/** The current domain owner alone opens an editor. */ () => {if (this.canEdit()) this.onEdit(field.name, () => this.renderList());});
       const swatch = row.createSpan({ cls: "kplex-style-manager-line-swatch" });
       const swatchStyle = effective.strokeStyle === "dashed" || effective.strokeStyle === "dotted" ? effective.strokeStyle : "solid";
       swatch.addClass(`is-${swatchStyle}`);
-      swatch.setCssProps({ "--kplex-style-swatch": sixHex(effective.strokeColor, "#696969") });
+      swatch.setCssProps({ "--kplex-style-swatch": colorValueCss(effective.strokeColor, NATIVE_LINK_STROKE) });
       const copy = row.createDiv({ cls: "kplex-style-manager-copy" });
       const heading = copy.createDiv({ cls: "kplex-style-manager-heading" });
       heading.createSpan({ text: field.name, cls: "kplex-style-manager-name" });
       const badges = heading.createSpan({ cls: "kplex-style-manager-badges" });
       for (const role of field.roles) badges.createSpan({ text: this.translate(roleLabelKey(role)), cls: "kplex-style-manager-badge" });
       copy.createDiv({
-        text: this.translate(customized ? "styles.customSummary" : "styles.defaultSummary", { summary: describeLinkStyle(style, this.baseStyle, this.translate) }),
+        text: this.translate(customized ? "styles.customSummary" : "styles.defaultSummary", { summary: describeLinkStyle(style, baseStyle, this.translate, this.colorContext?.preferences().palette) }),
         cls: "kplex-style-manager-summary",
       });
-      appendIcon(row, "chevron-right");
-      row.addEventListener("click", () => this.onEdit(field.name, () => this.renderList()));
+
     }
-    if (windowed.remaining > 0) {
-      const more = this.listEl.createEl("button", {
-        cls: "kplex-style-manager-more",
-        text: this.translate("collection.showMore", { count: windowed.nextCount }),
-      });
-      more.type = "button";
-      more.addEventListener("click", () => {
-        this.visibleLimit += 20;
-        this.renderList();
-      });
-    }
+    this.manager.more(windowed, /** Show more only expands this existing filtered list. */ () => this.renderList());
   }
 
   onClose(): void {
-    this.contentEl.empty();
+    super.onClose(); this.releaseColors?.(); this.releaseColors = null; this.swatches?.dispose(); this.swatches = null;
+    this.manager = null; this.listEl = null; this.statusEl = null; this.contentEl.empty(); this.onClosed?.();
   }
 }
 
-class NoteTypeStylesManagerModal extends Modal {
-  private readonly translate = createObsidianTranslator();
+class NoteTypeStylesManagerModal extends StyleEditorModal {
+  private swatches: StyleSwatchScope | null = null;
+  private releaseColors: (() => void) | null = null;
   private search = "";
-  private visibleLimit = 12;
+  private manager: StyleManagerList | null = null;
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
 
@@ -1396,12 +1386,17 @@ class NoteTypeStylesManagerModal extends Modal {
     private getEntries: () => NodeStyleEntry[],
     private getStyle: (entry: NodeStyleEntry) => NodeStyle,
     private onEdit: (entry: NodeStyleEntry | null, afterChange: () => void) => void,
+    private colorContext?: StyleColorContext,
+    private onClosed?: () => void,
   ) {
     super(app);
   }
 
   /** Render the searchable note-type style manager with localized captions and feedback; the native Modal owns its open/close shell. */
   onOpen(): void {
+    this.beginEditor(this.colorContext?.sourceScope, this.colorContext?.bindEditor);
+    this.swatches = new StyleSwatchScope(this.contentEl, this.colorContext ?? {preferences: defaultColorPreferences});
+    this.releaseColors = this.colorContext?.subscribeColors?.(() => this.renderList()) ?? null;
     this.titleEl.setText(this.translate("styles.nodeTitle"));
     this.modalEl.addClass("kplex-style-manager-modal");
     this.contentEl.addClass("kplex-style-manager");
@@ -1409,35 +1404,29 @@ class NoteTypeStylesManagerModal extends Modal {
       text: this.translate("styles.managerHelp", { property: this.styleProperty || "Note type" }),
     });
 
-    const controls = this.contentEl.createDiv({ cls: "kplex-style-manager-controls" });
-    const searchWrap = controls.createDiv({ cls: "search-input-container kplex-style-manager-search" });
-    const search = searchWrap.createEl("input", {
-      attr: { type: "search", placeholder: this.translate("styles.searchNodePlaceholder"), "aria-label": this.translate("styles.searchNodeAria") },
-    });
-    search.addEventListener("input", () => {
-      this.search = search.value.trim().toLowerCase();
-      this.visibleLimit = 12;
-      this.renderList();
-    });
-    const add = controls.createEl("button", { cls: "mod-cta", text: this.translate("styles.addStyle") });
-    appendIcon(add, "plus");
-    add.addEventListener("click", () => this.onEdit(null, () => this.renderList()));
+    this.manager = new StyleManagerList(this.contentEl, this.translate,
+      {placeholder: this.translate("styles.searchNodePlaceholder"), aria: this.translate("styles.searchNodeAria")},
+      /** Search mechanics are shared; this manager retains its domain filters and entries. */ query => {this.search = query; this.renderList();});
+    const search = this.manager.search;
 
-    this.statusEl = this.contentEl.createDiv({ cls: "kplex-style-manager-status" });
-    this.listEl = this.contentEl.createDiv({ cls: "kplex-style-manager-list" });
+    this.manager.action(this.translate("styles.addStyle"), "plus", /** Keep creation in the existing domain editor. */ () => {if (this.canEdit()) this.onEdit(null, () => this.renderList());});
+
+    this.statusEl = this.manager.status;
+    this.listEl = this.manager.list;
     this.renderList();
-    window.setTimeout(() => search.focus(), 0);
+    this.focusAfterAttachment(search);
   }
 
   /** Rebuild the searchable note-type style manager entries with localized status/actions while preserving actual field and style values. */
   private renderList(): void {
-    if (!this.listEl || !this.statusEl) return;
+    if (!this.canEdit() || !this.listEl || !this.statusEl || !this.manager) return;
     this.listEl.empty();
     const entries = this.getEntries();
     const matches = entries.filter((entry) => !this.search || entry.name.toLowerCase().includes(this.search));
     this.statusEl.setText(this.translate("styles.resultCount", { count: entries.length, results: matches.length }));
 
     if (!matches.length) {
+      this.swatches?.dispose();
       this.listEl.createDiv({
         cls: "kplex-style-manager-empty",
         text: this.translate(entries.length ? "styles.noMatches" : "styles.noneConfigured"),
@@ -1445,38 +1434,28 @@ class NoteTypeStylesManagerModal extends Modal {
       return;
     }
 
-    const windowed = collectionWindow(matches, this.visibleLimit, 20);
+    const windowed = this.manager.window(matches);
+    this.swatches?.update(appearanceColorReferences({noteTypeStyles: Object.fromEntries(windowed.visible.map(entry => [entry.kind + ":" + entry.name, {...this.colorContext?.nodeStyle(), ...this.getStyle(entry)}]))}));
     for (const entry of windowed.visible) {
-      const style = this.getStyle(entry);
-      const row = this.listEl.createEl("button", { cls: "kplex-style-manager-row" });
-      row.type = "button";
+      const style = {...this.colorContext?.nodeStyle(), ...this.getStyle(entry)};
+      const row = this.manager.row(/** The current domain owner alone opens an editor. */ () => {if (this.canEdit()) this.onEdit(entry, () => this.renderList());});
       const swatch = row.createSpan({ cls: "kplex-style-manager-node-swatch" });
       swatch.setCssProps({
-        "--kplex-style-node-bg": sixHex(style.backgroundColor, "#000000"),
-        "--kplex-style-node-border": sixHex(style.borderColor, "#6f849a"),
+        "--kplex-style-node-bg": colorValueCss(style.backgroundColor, NATIVE_NODE_PAINT.fill),
+        "--kplex-style-node-border": colorValueCss(style.borderColor, NATIVE_NODE_PAINT.border),
       });
       const copy = row.createDiv({ cls: "kplex-style-manager-copy" });
       copy.createDiv({ text: entry.name, cls: "kplex-style-manager-name" });
       copy.createDiv({ text: this.translate(entry.kind === "tag" ? "styles.legacyTag" : "styles.propertyValue"), cls: "kplex-style-manager-badge" });
-      copy.createDiv({ text: describeNodeStyle(style, this.translate), cls: "kplex-style-manager-summary" });
-      appendIcon(row, "chevron-right");
-      row.addEventListener("click", () => this.onEdit(entry, () => this.renderList()));
+      copy.createDiv({ text: describeNodeStyle(style, this.translate, this.colorContext?.preferences().palette), cls: "kplex-style-manager-summary" });
+
     }
-    if (windowed.remaining > 0) {
-      const more = this.listEl.createEl("button", {
-        cls: "kplex-style-manager-more",
-        text: this.translate("collection.showMore", { count: windowed.nextCount }),
-      });
-      more.type = "button";
-      more.addEventListener("click", () => {
-        this.visibleLimit += 20;
-        this.renderList();
-      });
-    }
+    this.manager.more(windowed, /** Show more only expands this existing filtered list. */ () => this.renderList());
   }
 
   onClose(): void {
-    this.contentEl.empty();
+    super.onClose(); this.releaseColors?.(); this.releaseColors = null; this.swatches?.dispose(); this.swatches = null;
+    this.manager = null; this.listEl = null; this.statusEl = null; this.contentEl.empty(); this.onClosed?.();
   }
 }
 
@@ -1604,77 +1583,56 @@ class UnassignedOntologyManagerModal extends Modal {
   }
 }
 
-class LegacySettingsImportModal extends Modal {
+/** Existing foreign-appearance chooser participates in the same durable shell and opening-theme fence. */
+class LegacySettingsImportModal extends StyleEditorModal {
   private rawText = "";
-  private readonly translate = createObsidianTranslator();
+  private readGeneration = 0;
+  private readonly openingOwner: AppearanceOwner;
 
-  constructor(app: App, private plugin: KplexPlugin, private onImported: () => void) {
-    super(app);
+  /** Capture the opening theme before file reads; imports cannot target a later selection. */
+  constructor(app: App, private plugin: KplexPlugin, private onImported: () => void, private onClosed?: () => void) {
+    super(app); this.openingOwner = plugin.captureAppearanceOwner();
   }
 
-  /** Render the legacy settings import chooser with localized captions and feedback; the native Modal owns its open/close shell. */
+  /** Choose a local legacy settings file without publishing any settings before explicit import. */
   onOpen(): void {
-    this.titleEl.setText(this.translate("settings.importTitle"));
-    this.contentEl.addClass("kplex-import-settings-modal");
-
-    this.contentEl.createEl("p", {
-      text: this.translate("settings.importHelp")
-    });
-
-    const fileRow = this.contentEl.createDiv({ cls: "kplex-import-file-row" });
-    const fileInput = fileRow.createEl("input", { attr: { type: "file", accept: "application/json,.json" } });
-    const status = this.contentEl.createDiv({ cls: "kplex-import-status", text: this.translate("settings.noFileSelected") });
-
-    fileInput.addEventListener("change", () => {
-      const file = fileInput.files?.[0];
-      if (!file) {
-        this.rawText = "";
-        status.setText(this.translate("settings.noFileSelected"));
-        return;
-      }
-      void file.text().then((text) => {
-        this.rawText = text;
-        status.setText(file.name);
-      }).catch((error: unknown) => {
-        this.rawText = "";
-        status.setText(this.translate("settings.fileReadFailed", { error: String(error) }));
+    this.beginEditor(undefined, /** The base shell retains stale drafts read-only until discard. */ editor => this.plugin.bindAppearanceEditor(editor, this.openingOwner));
+    this.titleEl.setText(this.translate("settings.importTitle")); this.contentEl.addClass("kplex-import-settings-modal");
+    this.contentEl.createEl("p", {text: this.translate("settings.importHelp")});
+    const fileRow = this.contentEl.createDiv({cls: "kplex-import-file-row"});
+    const fileInput = fileRow.createEl("input", {attr: {type: "file", accept: "application/json,.json"}});
+    const status = this.contentEl.createDiv({cls: "kplex-import-status", text: this.translate("settings.noFileSelected")});
+    fileInput.addEventListener("change", /** Read only the explicitly chosen local JSON, fencing close/reselection/theme changes. */ () => {
+      if (!this.canEdit()) return;
+      const file = fileInput.files?.[0], generation = ++this.readGeneration; this.rawText = "";
+      if (!file) {status.setText(this.translate("settings.noFileSelected")); return;}
+      void file.text().then(/** An old File promise cannot replace a newer selection or retired draft. */ text => {
+        if (!this.canEdit() || generation !== this.readGeneration) return;
+        this.rawText = text; status.setText(file.name);
+      }).catch(/** Failure belongs only to the still-open chosen file. */ (error: unknown) => {
+        if (this.canEdit() && generation === this.readGeneration) status.setText(this.translate("settings.fileReadFailed", {error: String(error)}));
       });
     });
-
-    const actions = this.contentEl.createDiv({ cls: "kplex-style-actions" });
-    const cancel = actions.createEl("button", { text: this.translate("common.cancel") });
-    appendIcon(cancel, "x");
-    cancel.addEventListener("click", () => this.close());
-
-    const importButton = actions.createEl("button", { cls: "mod-cta", text: this.translate("settings.importButton") });
-    appendIcon(importButton, "download");
-    importButton.addEventListener("click", () => {
-      if (!this.rawText) {
-        status.setText(this.translate("settings.chooseFileFirst"));
-        return;
-      }
-      try {
-        const parsed = JSON.parse(this.rawText) as unknown;
-        this.plugin.settings = importExcaliBrainGraphSettings(parsed, this.plugin.settings);
-      } catch (error) {
-        status.setText(this.translate("settings.invalidJson", { error: String(error) }));
-        return;
-      }
-      importButton.disabled = true;
-      void this.plugin.saveSettings(true).then(() => {
-        new Notice(this.translate("settings.importedNotice"), 2600);
-        this.onImported();
-        this.close();
-      }).catch((error: unknown) => {
-        importButton.disabled = false;
-        status.setText(this.translate("settings.importFailed", { error: String(error) }));
+    const actions = this.contentEl.createDiv({cls: "kplex-style-actions"});
+    const cancel = actions.createEl("button", {text: this.translate("common.cancel")}); appendIcon(cancel, "x");
+    cancel.addEventListener("click", /** Cancellation never mutates or persists a candidate import. */ () => this.close());
+    const button = actions.createEl("button", {cls: "mod-cta", text: this.translate("settings.importButton")}); appendIcon(button, "download");
+    button.addEventListener("click", /** Capture one valid import before the queue freezes this form. */ () => {
+      if (!this.canEdit()) return;
+      if (!this.rawText) {status.setText(this.translate("settings.chooseFileFirst")); return;}
+      let parsed: unknown;
+      try {parsed = JSON.parse(this.rawText);} catch (error) {status.setText(this.translate("settings.invalidJson", {error: String(error)})); return;}
+      this.runOperation(/** Legacy appearance, active stored theme and ontology share one durable operation. */ async current => {
+        const result = await this.plugin.importLegacyAppearance(parsed, this.openingOwner);
+        if (!current()) return result;
+        try {new Notice(this.translate("settings.importedNotice"), 2600); this.onImported(); return result;}
+        catch (error) {console.error("K-Plex saved legacy import refresh failed", error); return {refreshPending: true};}
       });
     });
   }
 
-  onClose(): void {
-    this.contentEl.empty();
-  }
+  /** Retire outstanding File callbacks and native/theme registrations before removing controls. */
+  onClose(): void {super.onClose(); this.readGeneration++; this.contentEl.empty(); this.onClosed?.();}
 }
 
 type DeclarativeSettingKey =
@@ -1725,6 +1683,10 @@ const arrowOptions = (translate: Translator): Record<Arrowhead, string> => ({
 
 export class KplexSettingTab extends PluginSettingTab {
   private actionSettings: ActionSettingsController | null = null;
+  private readonly colorDialogs = new Set<StyleEditorModal>();
+  private colorDialogGeneration = 0;
+  private readonly colorSwatchPages = new WeakMap<HTMLElement, ColorSwatchList>();
+  private readonly colorSwatchOwners = new Set<ColorSwatchList>();
 
   /** Keep shortcut editing in the native settings hierarchy with lazy rendered resource ownership. */
   constructor(app: App, private kplexPlugin: KplexPlugin) {
@@ -1739,7 +1701,12 @@ export class KplexSettingTab extends PluginSettingTab {
 
   /** Release row subscriptions and transient input before navigation, unload or settings teardown. */
   disposeActionSettings(): void {
+    this.colorDialogGeneration++;
+    for (const owner of this.colorSwatchOwners) owner.dispose();
+    this.colorSwatchOwners.clear();
     this.actionSettings?.dispose();
+    for (const dialog of this.colorDialogs) dialog.retire();
+    this.colorDialogs.clear();
   }
 
   /** Native tab switches must not retain an editor or capture handler from the previous page. */
@@ -1783,10 +1750,13 @@ export class KplexSettingTab extends PluginSettingTab {
 
   /** Open a new style with a selectable family, or edit a style without changing its family. */
   private openNodeStyleEditor(kind: NodeStyleKind, name: string | null, afterChange?: () => void): void {
+    const owner = this.kplexPlugin.captureAppearanceOwner();
     const settings = this.kplexPlugin.settings;
     const styles = kind === "tag" ? settings.tagNodeStyles : settings.noteTypeStyles;
-    new NodeStyleModal(
-      this.app, name, name ? styles[name] ?? {} : {}, settings.noteTypeField,
+    const openingExists = name !== null && Object.prototype.hasOwnProperty.call(styles, name) === true;
+    const opening = structuredClone(name ? styles[name] ?? {} : {});
+    const dialog = new NodeStyleModal(
+      this.app, name, opening, settings.noteTypeField,
       this.nodeStyleValueSuggestions(),
       /** Save to the selected family, retaining existing imported tag order and unrelated styles. */
       async (nextName, nextStyle, previousName, selectedKind, isCurrent) => this.commitStyleChange(/** Prepare only this queued edit; a disk failure cannot change live styles. */ currentSettings => {
@@ -1794,27 +1764,363 @@ export class KplexSettingTab extends PluginSettingTab {
         const normalizedValue = selectedKind === "tag" ? normalizeTagStylePrefix(nextName) : normalizeNodeStyleValue(nextName);
         if (!normalizedValue) throw new Error("Invalid style name");
         const normalizedNext = selectedKind === "tag" && previousName !== null && nextName === previousName ? previousName : normalizedValue;
+        const latest = previousName ? target[previousName] : undefined;
+        if (openingExists && previousName && !latest) throw new Error("Edited style no longer exists");
+        const merged = mergeStyleDraft(opening, nextStyle, latest ?? {}, NODE_COLOR_FIELDS);
+        for (const field of NODE_COLOR_FIELDS) if (!colorValuesEqual(opening[field], merged[field])) requireNamedColor(merged[field], currentSettings.colorPreferences);
         if (previousName && previousName !== normalizedNext) delete target[previousName];
-        target[normalizedNext] = nextStyle;
+        target[normalizedNext] = merged;
         if (selectedKind === "tag") {
           // A rename retains first-match priority; a new tag prefix follows existing styles.
           currentSettings.tagStyleList = currentSettings.tagStyleList.map(/** Preserve each existing priority slot. */ (key) => key === previousName ? normalizedNext : key);
           if (!currentSettings.tagStyleList.includes(normalizedNext)) currentSettings.tagStyleList.push(normalizedNext);
         }
-      }, isCurrent, afterChange),
+      }, isCurrent, owner, afterChange),
       /** Delete from the fixed edited family without affecting an equally named other-family style. */
       async (removeName, isCurrent) => this.commitStyleChange(/** Delete within the latest queued family without restoring unrelated preferences. */ currentSettings => {
         const target = kind === "tag" ? currentSettings.tagNodeStyles : currentSettings.noteTypeStyles;
         delete target[removeName];
         if (kind === "tag") currentSettings.tagStyleList = currentSettings.tagStyleList.filter(/** Remove only the deleted prefix's matching slots. */ (key) => key !== removeName);
-      }, isCurrent, afterChange),
-      kind,
-    ).open();
+      }, isCurrent, owner, afterChange),
+      kind, this.styleColorContext(owner), () => this.colorDialogs.delete(dialog),
+    );
+    this.colorDialogs.add(dialog); dialog.open();
+  }
+
+  /**
+   * Native declarative subpages replace (and detach) the tab root. Reacquire the visible page in
+   * that exact Settings document; never navigate another application window. The connected page
+   * guards delayed action opening, independently of the stable document used for theme previews.
+   */
+  private colorActionPage(): HTMLElement {
+    if (this.containerEl.isConnected) return this.containerEl;
+    const doc = this.containerEl.ownerDocument;
+    return Array.from(doc.querySelectorAll<HTMLElement>(".setting-page-content"))
+      .find(/** Only the currently displayed native page may supply a detached tab's context. */ page => page.isConnected && page.getClientRects().length > 0) ?? this.containerEl;
+  }
+
+  /**
+   * A native subpage is replaced on css-change, even while its modal draft remains open. Sample
+   * the stable owning Settings body in that case; it carries the host theme and inherited public
+   * tokens. A still-attached root keeps its explicit scope, including local custom variables.
+   */
+  private colorSourceScope(): HTMLElement {
+    const page = this.colorActionPage();
+    return page !== this.containerEl ? page.ownerDocument.body : page;
+  }
+
+  /** Native color surfaces share current preview facts and one CSS subscription contract. */
+  private styleColorContext(owner?: AppearanceOwner, sourceScope = this.colorSourceScope()): StyleColorContext {
+    const plugin = this.kplexPlugin;
+    const opening = owner ? structuredClone({colorPreferences: plugin.settings.colorPreferences, baseNodeStyle: plugin.settings.baseNodeStyle,
+      baseLinkStyle: plugin.settings.baseLinkStyle, backgroundColor: plugin.settings.backgroundColor}) : null;
+    /** An old draft keeps its own appearance while CSS remains live in its owning document. */
+    const current = (): Pick<KplexSettings, "colorPreferences" | "baseNodeStyle" | "baseLinkStyle" | "backgroundColor"> => owner && opening && !plugin.isAppearanceOwnerCurrent(owner) ? opening : plugin.settings;
+    return {sourceScope, translate: plugin.translator,
+      ...(owner ? {bindEditor: /** Every nested source/pair editor shares this exact parent activation. */ (editor: StyleEditorModal) => plugin.bindAppearanceEditor(editor, owner)} : {}),
+      subscribeColors: changed => subscribeAppearanceSources(listener => plugin.index.subscribePresentation(listener), current, changed),
+      preferences: () => current().colorPreferences, nodeStyle: () => current().baseNodeStyle,
+      linkStyle: () => current().baseLinkStyle, background: () => current().backgroundColor,
+      subscribeCss: changed => {const ref = this.app.workspace.on("css-change", changed); return () => this.app.workspace.offref(ref);}};
+  }
+
+  /** Lazily open a native Compass draft; teardown/migration supersedes loading, and only edited fields enter the existing queue. */
+  private async openCompassSettings(): Promise<void> {
+    const owner = this.kplexPlugin.captureAppearanceOwner();
+    const generation = ++this.colorDialogGeneration, actionPage = this.colorActionPage(), sourceScope = this.colorSourceScope(), sourceDocument = sourceScope.ownerDocument;
+    const plugin = this.kplexPlugin; if (plugin.settings.colorPreferencesFuture !== undefined) return;
+    const {CompassSettingsModal} = await import("./ui/CompassSettingsModal");
+    if (!plugin.isAppearanceOwnerCurrent(owner) || generation !== this.colorDialogGeneration || !actionPage.isConnected || !sourceScope.isConnected || sourceScope.ownerDocument !== sourceDocument || plugin.settings.colorPreferencesFuture !== undefined) return;
+    const dialog = new CompassSettingsModal(this.app, this.styleColorContext(owner), /** Merge against the latest durable owner without restoring stale palette or unedited fills. */ (initial, edited, current) => this.commitStyleChange(/** Each explicit Compass field has independent last-edit ownership. */ draft => {
+      const latest = draft.colorPreferences.compass;
+      if (initial.enabled !== edited.enabled) latest.enabled = edited.enabled;
+      if (initial.intensity !== edited.intensity) {if (edited.intensity === undefined) delete latest.intensity; else latest.intensity = edited.intensity;}
+      for (const direction of COMPASS_DIRECTIONS) if (!colorValuesEqual(initial.fills[direction], edited.fills[direction])) {
+        const value = edited.fills[direction]; requireNamedColor(value, draft.colorPreferences);
+        if (value === undefined) delete latest.fills[direction]; else latest.fills[direction] = value;
+      }
+    }, current, owner), /** Release exactly this native editor after close or migration. */ () => this.colorDialogs.delete(dialog));
+    this.colorDialogs.add(dialog); dialog.open();
+  }
+
+  /** A searchable palette manager owns all pair and replacement dialogs until native tab teardown. */
+  private openColorPalette(): void {
+    const owner = this.kplexPlugin.captureAppearanceOwner();
+    const plugin = this.kplexPlugin;
+    const dialog = new ColorPaletteModal(this.app, {...this.styleColorContext(owner), read: () => plugin.settings,
+      readOnly: () => plugin.settings.colorPreferencesFuture !== undefined || plugin.settings.appearanceThemesFuture !== undefined || !plugin.isAppearanceOwnerCurrent(owner),
+      canDelete: () => plugin.settings.graphLensesColorFuture === undefined && !appearanceHasUnsupportedColors(plugin.settings),
+      write: edit => plugin.updateStyleSettings(edit, owner), subscribe: changed => subscribeAppearanceSources(listener => plugin.index.subscribePresentation(listener), () => plugin.settings, changed),
+      onClosed: () => this.colorDialogs.delete(dialog)});
+    this.colorDialogs.add(dialog); dialog.open();
+  }
+
+  /** Each semantic slot validates its local candidate, including self/indirect cycles, before explicit Save. */
+  private openSemanticColor(slot: SemanticColorSlot): void {
+    const owner = this.kplexPlugin.captureAppearanceOwner();
+    const plugin = this.kplexPlugin; if (plugin.settings.colorPreferencesFuture !== undefined) return;
+    const context = this.styleColorContext(owner);
+    const dialog = new ColorSourceModal(this.app, {...context, title: plugin.translator(`colors.semantic.${slot}`),
+      initial: plugin.settings.colorPreferences.semantic[slot], target: {kind: "node", field: "borderColor"},
+      inherit: () => ({kind: "theme", variable: `--kplex-semantic-${slot}`}), preferences: candidate => {
+        const prefs = context.preferences(), semantic = {...prefs.semantic};
+        if (candidate === undefined) delete semantic[slot]; else semantic[slot] = candidate;
+        return {...prefs, semantic};
+      },
+      onSave: (color, current) => this.commitStyleChange(draft => {
+        requireNamedColor(color, draft.colorPreferences);
+        if (color === undefined) delete draft.colorPreferences.semantic[slot]; else draft.colorPreferences.semantic[slot] = color;
+      }, current, owner), onClosed: () => this.colorDialogs.delete(dialog)});
+    this.colorDialogs.add(dialog); dialog.open();
+  }
+
+  /** Share one bounded paired-color sampler among the currently rendered native page's rows. */
+  private mountColorSwatches(element: HTMLElement, read: () => readonly ColorSwatchItem[]): () => void {
+    const page = element.closest<HTMLElement>(".setting-page-content, .vertical-tab-content") ?? this.colorSourceScope();
+    let owner = this.colorSwatchPages.get(page);
+    if (!owner) {
+      owner = new ColorSwatchList(page, this.styleColorContext(), /** Retired page owners do not accumulate across repeated navigation. */ () => {this.colorSwatchOwners.delete(owner!); this.colorSwatchPages.delete(page);});
+      this.colorSwatchPages.set(page, owner); this.colorSwatchOwners.add(owner);
+    }
+    return owner.add(element, read);
+  }
+
+  /** Render a reusable pair beside an explicit native Edit action; source/queue behavior stays in existing editors. */
+  private colorAction(name: string, read: () => readonly ColorSwatchItem[], action: () => void, desc?: string): SettingDefinition<DeclarativeSettingKey> {
+    return {name, desc, render: /** Native cleanup owns the paired preview registration. */ setting => {
+      const release = this.mountColorSwatches(setting.controlEl.createDiv(), read);
+      setting.addButton(/** Associate repeated Edit actions with their specific color property for keyboard/screen-reader users. */ button => {
+        button.setButtonText(this.kplexPlugin.translator("colors.edit")).setDisabled(this.kplexPlugin.settings.colorPreferencesFuture !== undefined || this.kplexPlugin.settings.appearanceThemesFuture !== undefined).onClick(action);
+        button.buttonEl.setAttribute("aria-label", `${this.kplexPlugin.translator("colors.edit")}: ${name}`);
+      });
+      return release;
+    }};
+  }
+
+  /** Read the same inherited fields and native role fallbacks used by the existing standard source editor. */
+  private standardSwatchItems(key: typeof STANDARD_NODE_COLOR_STYLES[number] | typeof STANDARD_LINK_COLOR_STYLES[number]): readonly ColorSwatchItem[] {
+    const settings = this.kplexPlugin.settings, node = key.endsWith("NodeStyle"), t = this.kplexPlugin.translator;
+    const values = {...(node ? settings.baseNodeStyle : settings.baseLinkStyle), ...settings[key]};
+    const fallback = nodePaintFallbacks({page: {isFolder: key === "folderNodeStyle", isTag: key === "tagNodeStyle", url: key === "urlNodeStyle" ? "url" : null, file: key === "virtualNodeStyle" ? null : true},
+      role: key === "centralNodeStyle" ? "center" : key === "siblingNodeStyle" ? "sibling" : "child", relationType: key === "inferredNodeStyle" ? RelationType.INFERRED : undefined});
+    return (node ? NODE_COLOR_FIELDS : LINK_COLOR_FIELDS).map(/** Each cell preserves its field label and current source identity. */ field => ({id: field, label: t(node ? nodeColorLabel(field as typeof NODE_COLOR_FIELDS[number]) : linkColorLabel(field as typeof LINK_COLOR_FIELDS[number])),
+      value: Reflect.get(values, field) as ColorValue | undefined, fallback: node ? nodeColorFallback(field as typeof NODE_COLOR_FIELDS[number], fallback) : field === "textColor" ? NATIVE_LINK_TEXT : NATIVE_LINK_STROKE}));
+  }
+
+  /** Bind the host's cloned page-description strips only after declarative siblings have mounted. */
+  private mountStandardOverview(setting: Setting): () => void {
+    let retired = false; const releases: Array<() => void> = [];
+    setting.settingEl.ownerDocument.defaultView?.queueMicrotask(/** Descriptions are cloned by Obsidian; the connected clones own their samples. */ () => {
+      if (retired || !setting.settingEl.isConnected) return;
+      const page = setting.settingEl.closest(".setting-page-content, .vertical-tab-content");
+      for (const element of Array.from(page?.querySelectorAll<HTMLElement>("[data-kplex-color-style]") ?? [])) {
+        const key = element.dataset.kplexColorStyle;
+        const known = [...STANDARD_NODE_COLOR_STYLES, ...STANDARD_LINK_COLOR_STYLES].find(candidate => candidate === key);
+        if (known) releases.push(this.mountColorSwatches(element, () => this.standardSwatchItems(known)));
+      }
+    });
+    return /** Native subpage replacement retires every connected description registration. */ () => {retired = true; for (const release of releases) release();};
+  }
+
+  /** Standard styles expose the same source controls without expanding user-defined collections. */
+  private standardColorPages(): SettingDefinitionItem<DeclarativeSettingKey>[] {
+    const plugin = this.kplexPlugin, t = plugin.translator;
+    return [...STANDARD_NODE_COLOR_STYLES, ...STANDARD_LINK_COLOR_STYLES].map(key => {
+      const title = t(`colors.standard.${key}`);
+      const fields = key.endsWith("NodeStyle") ? NODE_COLOR_FIELDS : LINK_COLOR_FIELDS;
+      const description = createFragment(); description.createDiv({attr: {"data-kplex-color-style": key}});
+      return {type: "page", name: title, desc: description, items: [{type: "group", heading: title, items: fields.map(field => this.colorAction(
+        t(field === "strokeColor" ? "styles.lineColor" : field === "textColor" && key.endsWith("LinkStyle") ? "styles.labelColor" : nodeColorLabel(field)),
+        () => this.standardSwatchItems(key).filter(item => item.id === field),
+        () => this.openStandardColor(key, field),
+      ))}]};
+    });
+  }
+
+  /** Clearing one standard field changes only its absence policy; every other legacy literal remains explicit. */
+  private openStandardColor(key: typeof STANDARD_NODE_COLOR_STYLES[number] | typeof STANDARD_LINK_COLOR_STYLES[number], field: typeof NODE_COLOR_FIELDS[number] | typeof LINK_COLOR_FIELDS[number]): void {
+    const owner = this.kplexPlugin.captureAppearanceOwner();
+    const plugin = this.kplexPlugin, context = this.styleColorContext(owner), isNode = key.endsWith("NodeStyle");
+    const openingStyle = structuredClone(plugin.settings[key]);
+    /** A stale draft never borrows the newly selected theme’s effective standard style. */
+    const currentStyle = (): NodeStyle | LinkStyle => plugin.isAppearanceOwnerCurrent(owner) ? plugin.settings[key] : openingStyle;
+    const initial = Reflect.get(plugin.settings[key], field) as ColorValue | undefined;
+    const lower = (): ColorValue | undefined => key === "baseNodeStyle" || key === "baseLinkStyle" ? undefined
+      : Reflect.get(isNode ? context.nodeStyle() : context.linkStyle(), field) as ColorValue | undefined;
+    const dialog = new ColorSourceModal(this.app, {...context, title: plugin.translator(`colors.standard.${key}`), initial,
+      target: isNode ? {kind: "node", field: field as typeof NODE_COLOR_FIELDS[number]} : {kind: "link", field: field as typeof LINK_COLOR_FIELDS[number]},
+      fallbacks: nodePaintFallbacks({page: {isFolder: key === "folderNodeStyle", isTag: key === "tagNodeStyle", url: key === "urlNodeStyle" ? "url" : null, file: key === "virtualNodeStyle" ? null : true},
+        role: key === "centralNodeStyle" ? "center" : key === "siblingNodeStyle" ? "sibling" : "child", relationType: key === "inferredNodeStyle" ? RelationType.INFERRED : undefined}),
+      inherit: lower, nodeStyle: () => isNode ? {...context.nodeStyle(), ...currentStyle()} : context.nodeStyle(),
+      linkStyle: () => isNode ? context.linkStyle() : {...context.linkStyle(), ...currentStyle()},
+      onSave: (color, current) => this.commitStyleChange(draft => {
+        requireNamedColor(color, draft.colorPreferences); const next = {...draft[key]};
+        if (color === undefined) Reflect.deleteProperty(next, field); else Object.assign(next, {[field]: color});
+        Object.assign(draft, {[key]: next}); draft.standardStyleDefaults = "native";
+      }, current, owner), onClosed: () => this.colorDialogs.delete(dialog)});
+    this.colorDialogs.add(dialog); dialog.open();
+  }
+
+  /** Immediate native rows follow Obsidian's document adoption; only actual row/window retirement disposes them. */
+  private subscribeThemeRow(setting: Setting, changed: (migrated: boolean) => void, retired: () => void): () => void {
+    let document = setting.settingEl.ownerDocument, live = true, releaseMigration: (() => void) | undefined, releaseWindow = (): void => {};
+    /** Native Settings can adopt a constructed row into its popout; recreate handlers without retargeting a dirty editor. */
+    const follow = (): void => {
+      if (!live) return; releaseWindow(); document = setting.settingEl.ownerDocument; const boundDocument = document, view = document.defaultView;
+      /** Closing an old window after adoption cannot retire a row already owned by another document. */
+      const closed = (): void => {if (setting.settingEl.ownerDocument !== boundDocument) {follow(); changed(true);} else dispose();};
+      view?.addEventListener("pagehide", closed, {once: true}); releaseWindow = /** Always unsubscribe from the exact acquired native window. */ () => view?.removeEventListener("pagehide", closed);
+    };
+    const release = this.kplexPlugin.subscribeAppearanceThemes(/** Reacquire only this mounted row's actual document and current activation. */ () => {
+      if (!live) return; if (setting.settingEl.ownerDocument !== document) {follow(); changed(true);} else if (!document.defaultView?.closed) changed(false); else dispose();
+    });
+    /** Explicit native page replacement and owning-window close share idempotent teardown. */
+    const dispose = (): void => {if (!live) return; live = false; release(); releaseMigration?.(); releaseWindow(); retired();};
+    follow();
+    if (typeof setting.settingEl.onWindowMigrated === "function") releaseMigration = setting.settingEl.onWindowMigrated(/** Initial same-window notification preserves state; real adoption replaces immediate native handlers. */ () => {
+      if (live && setting.settingEl.ownerDocument !== document) {follow(); changed(true);}
+    });
+    return dispose;
+  }
+
+  /** Theme controls stay on Visual styling; native rows own their exact subscriptions and generation. */
+  private appearanceThemeDefinitions(): SettingDefinitionItem<DeclarativeSettingKey>[] {
+    const t = this.kplexPlugin.translator;
+    return [{name: t("themes.label"), desc: t("themes.help"), render: /** Mount native controls only on the displayed page/search result. */ setting => this.mountThemeControls(setting)},
+      {name: t("themes.migrationMessage"), visible: /** The durable marker makes this one dismissible migration message. */ () => this.kplexPlugin.settings.appearanceThemes?.migrationNotice === true,
+        render: /** Native teardown releases the exact message row, including popout settings. */ setting => {
+          let active = true, pending = false; const plugin = this.kplexPlugin;
+          setting.addExtraButton(/** Persist dismissal as library metadata without any graph work. */ button => {
+            button.setIcon("x").setTooltip(t("themes.dismissMigration")); button.extraSettingsEl.setAttribute("aria-label", t("themes.dismissMigration"));
+            button.onClick(/** Duplicate/stale native events cannot dismiss a replacement migration state. */ async () => {
+              if (!active || pending) return; pending = true; button.setDisabled(true); const owner = plugin.captureAppearanceOwner();
+              try {const result = await plugin.updateAppearanceThemes({kind: "dismiss-migration"}, owner); if (result.refreshPending) new Notice(t("styles.operation.savedRefreshPending"));}
+              catch (error) {console.error("K-Plex theme message dismissal was not saved", error); new Notice(t("styles.operation.notSaved"));}
+              finally {pending = false; if (active) button.setDisabled(false);}
+            });
+          });
+          return this.subscribeThemeRow(setting, /** Hide only after durable dismissal; other settings stay mounted. */ () => {if (active) setting.settingEl.toggle(plugin.settings.appearanceThemes?.migrationNotice === true);}, /** Pending UI completion cannot revive a removed row. */ () => {active = false;});
+        }}];
+  }
+
+  /** Use one native dropdown and native Lucide icon buttons, never a separate CRUD toolbar. */
+  private mountThemeControls(setting: Setting): () => void {
+    const plugin = this.kplexPlugin, t = plugin.translator; let active = true, pending = false, generation = 0;
+    setting.settingEl.addClass("kplex-theme-setting");
+    /** Metadata updates names only here; activation retires old native callbacks through their captured proof. */
+    const paint = (): void => {
+      if (!active) return; setting.clear(); const mount = ++generation;
+      const library = plugin.settings.appearanceThemes, owner = plugin.captureAppearanceOwner();
+      const readOnly = !library || plugin.settings.appearanceThemesFuture !== undefined;
+      setting.setDesc(t(readOnly ? "themes.unavailable" : "themes.help"));
+      setting.addDropdown(/** Native selection is explicit and publishes only after the existing queue saves. */ dropdown => {
+        dropdown.selectEl.setAttribute("aria-label", t("themes.label"));
+        if (library) dropdown.addOptions(Object.fromEntries(library.themes.map(/** Names are literal user data; IDs remain stable. */ theme => [theme.id, theme.name]))).setValue(library.selectedId);
+        dropdown.setDisabled(readOnly || pending).onChange(/** Retain the durable selection and restore it after a storage failure. */ async id => {
+          if (!active || mount !== generation || pending || readOnly || !plugin.isAppearanceOwnerCurrent(owner) || id === library?.selectedId) return;
+          pending = true; dropdown.setDisabled(true);
+          try {const result = await plugin.updateAppearanceThemes({kind: "select", id}, owner); if (result.refreshPending) new Notice(t("styles.operation.savedRefreshPending"));}
+          catch (error) {console.error("K-Plex theme selection was not saved", error); new Notice(t("styles.operation.notSaved"));}
+          finally {pending = false; paint();}
+        });
+      });
+      setting.addExtraButton(/** The manager opens metadata without selecting a row. */ button => {
+        button.setIcon("palette").setTooltip(t("themes.manage")).setDisabled(readOnly || pending); button.extraSettingsEl.setAttribute("aria-label", t("themes.manage"));
+        button.onClick(/** Capture this mounted row's activation, not a later selected identity. */ () => {if (active && mount === generation && !pending && !readOnly && plugin.isAppearanceOwnerCurrent(owner)) this.openAppearanceThemes(owner, setting.settingEl.ownerDocument.body);});
+      });
+      setting.addExtraButton(/** Factory is immutable; editable themes share the existing color-reset confirmation. */ button => {
+        const disabled = readOnly || pending || library?.selectedId === DEFAULT_THEME_ID;
+        button.setIcon("rotate-ccw").setTooltip(t("themes.reset")).setDisabled(disabled); button.extraSettingsEl.setAttribute("aria-label", t("themes.reset"));
+        button.onClick(/** Native disabled treatment is reinforced before opening any draft. */ () => {if (active && mount === generation && !disabled && !pending && plugin.isAppearanceOwnerCurrent(owner)) this.openThemeColorReset("base", owner, false, setting.settingEl.ownerDocument.body);});
+      });
+    };
+    paint(); return this.subscribeThemeRow(setting, paint, /** Row teardown retires pending completions and native handlers. */ () => {active = false;});
+  }
+
+  /** Reuse node/link manager mechanics and the same queued appearance ownership for the saved library. */
+  private openAppearanceThemes(owner = this.kplexPlugin.captureAppearanceOwner(), sourceScope = this.colorSourceScope().ownerDocument.body): void {
+    const plugin = this.kplexPlugin, opening = plugin.settings.appearanceThemes;
+    if (!opening || plugin.settings.appearanceThemesFuture !== undefined || !plugin.isAppearanceOwnerCurrent(owner)) return;
+    const dialog = new AppearanceThemesManagerModal(this.app, {context: this.styleColorContext(owner, sourceScope),
+      library: /** A retired manager keeps its opening data visible read-only rather than retargeting. */ () => plugin.isAppearanceOwnerCurrent(owner) ? plugin.settings.appearanceThemes ?? opening : opening,
+      subscribe: /** The plugin's metadata channel does not notify scene/index subscribers. */ changed => plugin.subscribeAppearanceThemes(changed),
+      save: /** Theme metadata and selection share one durable operation, never a second writer. */ (action, _current) => plugin.updateAppearanceThemes(action, owner),
+      create: /** Creating selects only after the same queued snapshot succeeds. */ (name, defaults, _current) => plugin.createAppearanceTheme(name, defaults, owner),
+      closed: /** Unload/settings replacement releases precisely this manager and its children. */ () => this.colorDialogs.delete(dialog)});
+    this.colorDialogs.add(dialog); dialog.open();
+  }
+
+  /** Enumerate the exact reviewed sources; palette definitions and non-color styling are never reset slots. */
+  private themeResetSlots(settings: StyleSettingsDraft, scope: ColorResetScope): string[] {
+    return [...(scope === "semantic" ? [] : standardColorSlots(settings)), ...(scope === "base" ? [] : semanticColorSlots(settings))];
+  }
+
+  /** Translate the finite scope while preserving literal rule/lens names instead of exposing storage paths. */
+  private themeResetSlotLabel(slot: string, settings: StyleSettingsDraft): string {
+    const t = this.kplexPlugin.translator; if (slot === "backgroundColor") return t("settings.ui.plex.background");
+    const parts = slot.split("."), key = parts[0], field = parts.at(-1) ?? "", name = parts.slice(1, -1).join(".");
+    if (key === "semantic") return t(`colors.semantic.${parts[1] as SemanticColorSlot}`);
+    if (key === "compass") return `${t("compass.title")} · ${t(`compass.${parts[1] as typeof COMPASS_DIRECTIONS[number]}`)}`;
+    const link = key.endsWith("LinkStyle") || key === "hierarchyLinkStyles" || parts.at(-2) === "edge";
+    const label = t(link ? linkColorLabel(field as typeof LINK_COLOR_FIELDS[number]) : nodeColorLabel(field as typeof NODE_COLOR_FIELDS[number]));
+    if (key === "lens") return t("themes.lensColor", {name: settings.graphLenses.find(/** Stable lens IDs never become matching expressions or recreated definitions. */ lens => lens.id === parts[1])?.name ?? parts[1], field: label});
+    if (key === "noteTypeStyles" || key === "tagNodeStyles" || key === "hierarchyLinkStyles") return `${name} · ${label}`;
+    return `${t(`colors.standard.${key as typeof STANDARD_NODE_COLOR_STYLES[number] | typeof STANDARD_LINK_COLOR_STYLES[number]}`)} · ${label}`;
+  }
+
+  /** Extend ColorAdoptionModal with detached scoped previews and one finite durable confirmation. */
+  private openThemeColorReset(initial: ColorResetScope, owner = this.kplexPlugin.captureAppearanceOwner(), baseShortcut = false, sourceScope = this.colorSourceScope().ownerDocument.body): void {
+    const plugin = this.kplexPlugin, library = plugin.settings.appearanceThemes;
+    if (!library || plugin.settings.appearanceThemesFuture !== undefined || plugin.settings.colorPreferencesFuture !== undefined || !plugin.isAppearanceOwnerCurrent(owner)
+      || (!baseShortcut && library.selectedId === DEFAULT_THEME_ID)) return;
+    const opening = structuredClone(Object.fromEntries(STYLE_SETTINGS_KEYS.map(/** Capture appearance only; this detached preview is never the theme schema. */ key => [key, plugin.settings[key]]))) as StyleSettingsDraft;
+    const context = this.styleColorContext(owner, sourceScope);
+    /** The confirmed scope is checked again at queue entry, without clearing newly introduced unreviewed fields. */
+    const save = (scope: ColorResetScope, current: () => boolean): Promise<StyleCommitResult> => this.commitStyleChange(/** Reset known source assignments only through the established queued draft. */ draft => {
+      if (owner.themeId === DEFAULT_THEME_ID) throw new Error("Default theme is immutable");
+      if (JSON.stringify(this.themeResetSlots(draft, scope)) !== JSON.stringify(this.themeResetSlots(opening, scope))) throw new Error("Affected colors changed; reopen reset preview");
+      resetAppearanceColors(draft, scope);
+    }, current, owner);
+    const dialog = new ColorAdoptionModal(this.app, context, [], current => save("base", current), /** Exact native lifetime cleanup. */ () => this.colorDialogs.delete(dialog), {
+      initial, baseShortcut, save,
+      preview: /** Each scope starts from the same detached opening snapshot; no sampled RGB is persisted. */ scope => {
+        const draft = structuredClone(opening); resetAppearanceColors(draft, scope);
+        const node = Object.values(draft.noteTypeStyles)[0] ?? Object.values(draft.tagNodeStyles)[0] ?? {}, link = Object.values(draft.hierarchyLinkStyles)[0] ?? {};
+        const previewContext: StyleColorContext = {...context, preferences: () => draft.colorPreferences,
+          nodeStyle: () => scope === "base" && baseShortcut ? draft.baseNodeStyle : {...draft.baseNodeStyle, ...node},
+          linkStyle: () => scope === "base" && baseShortcut ? draft.baseLinkStyle : {...draft.baseLinkStyle, ...link}, background: () => draft.backgroundColor};
+        return {slots: this.themeResetSlots(opening, scope).map(/** Human-readable reviewed source names remain local to this dialog. */ slot => this.themeResetSlotLabel(slot, opening)), context: previewContext,
+          target: {kind: "canvas"}, value: draft.backgroundColor};
+      },
+    });
+    this.colorDialogs.add(dialog); dialog.open();
+  }
+
+
+  /** Preserve the established base-only adoption shortcut in the same scoped confirmation. */
+  private openColorAdoption(): void {this.openThemeColorReset("base", this.kplexPlugin.captureAppearanceOwner(), true);}
+
+  /** Settings and canvas reuse one detached source shell and the existing queued writer. */
+  private openCanvasColorEditor(): void {
+    const owner = this.kplexPlugin.captureAppearanceOwner();
+    const sourceScope = this.colorSourceScope(); if (!sourceScope.isConnected) return;
+    const plugin = this.kplexPlugin;
+    const dialog = new ColorSourceModal(this.app, {...this.styleColorContext(owner),
+      title: plugin.translator("settings.ui.plex.background"), initial: plugin.settings.backgroundColor,
+      sourceScope, translate: plugin.translator, target: {kind: "canvas"},
+      onSave: (color, current) => this.commitStyleChange(draft => {
+        if (color && typeof color !== "string" && color.kind === "palette" && !draft.colorPreferences.palette.some(pair => pair.id === color.id)) throw new Error("Named color no longer exists");
+        draft.backgroundColor = color;
+        draft.standardStyleDefaults = "native";
+      }, current, owner),
+      onClosed: () => this.colorDialogs.delete(dialog),
+    });
+    this.colorDialogs.add(dialog); dialog.open();
   }
 
   /** Durable completion is authoritative; manager/settings failures become saved recovery hints and retired dialogs cannot refresh UI. */
-  private async commitStyleChange(edit: (draft: StyleSettingsDraft) => void, isCurrent: () => boolean, afterChange?: () => void): Promise<StyleCommitResult> {
-    const result = await this.kplexPlugin.updateStyleSettings(edit);
+  private async commitStyleChange(edit: (draft: StyleSettingsDraft) => void, isCurrent: () => boolean, owner: AppearanceOwner, afterChange?: () => void): Promise<StyleCommitResult> {
+    const result = await this.kplexPlugin.updateStyleSettings(edit, owner);
     if (!isCurrent()) return result;
     let refreshPending = result.refreshPending;
     for (const refresh of [afterChange, /** Refresh only this still-mounted native Settings page. */ () => { if (this.containerEl.isConnected) this.update(); }]) {
@@ -1864,7 +2170,8 @@ export class KplexSettingTab extends PluginSettingTab {
 
   /** Manage both style families through one searchable list and the explicit-family editor. */
   private openNoteTypeStylesManager(): void {
-    new NoteTypeStylesManagerModal(
+    const owner = this.kplexPlugin.captureAppearanceOwner();
+    const dialog = new NoteTypeStylesManagerModal(
       this.app,
       this.kplexPlugin.settings.noteTypeField,
       /** Refresh manager entries after a successful style save/delete. */ () => this.nodeStyleEntries(),
@@ -1872,12 +2179,14 @@ export class KplexSettingTab extends PluginSettingTab {
       (entry) => (entry.kind === "tag" ? this.kplexPlugin.settings.tagNodeStyles : this.kplexPlugin.settings.noteTypeStyles)[entry.name] ?? {},
       /** Existing entries retain their family; Add starts in property mode with a visible choice. */
       (entry, afterChange) => this.openNodeStyleEditor(entry?.kind ?? "property", entry?.name ?? null, afterChange),
-    ).open();
+      this.styleColorContext(owner), () => this.colorDialogs.delete(dialog),
+    );
+    this.colorDialogs.add(dialog); dialog.open();
   }
 
   /** Build style-manager entries from configured ontology fields, preserving field values and localizing fallback role captions. */
   private ontologyStyleFields(): OntologyStyleField[] {
-    const roleGroups: [Role, string[]][] = [
+    const roleGroups: [Exclude<Role, "sibling">, string[]][] = [
       ["parent", this.kplexPlugin.settings.hierarchy.parents],
       ["child", this.kplexPlugin.settings.hierarchy.children],
       ["left", this.kplexPlugin.settings.hierarchy.leftFriends],
@@ -1886,7 +2195,7 @@ export class KplexSettingTab extends PluginSettingTab {
       ["next", this.kplexPlugin.settings.hierarchy.next],
     ];
     const fields = new Map<string, OntologyStyleField>();
-    const registerField = (name: string, role: Role) => {
+    const registerField = /** Merge one physical field into the manager without activating another theme or changing styles. */ (name: string, role: Role) => {
       const trimmed = name.trim();
       if (!trimmed) return;
       const key = normalizeOntologyStyleKey(trimmed);
@@ -1902,8 +2211,8 @@ export class KplexSettingTab extends PluginSettingTab {
         const mapping = parseHierarchyFieldMapping(rawName);
         registerField(mapping.forward, role);
         if (mapping.inverse) {
-          const opposite = oppositeOntologyRole(role as EvidenceRole);
-          if (opposite) registerField(mapping.inverse, opposite as Role);
+          const opposite = oppositeOntologyRole(role);
+          if (opposite && opposite !== "hidden") registerField(mapping.inverse, opposite);
         }
       }
     }
@@ -1922,9 +2231,11 @@ export class KplexSettingTab extends PluginSettingTab {
 
   /** Edit/reset an ontology appearance override through the same durable owner as node styles. */
   private openOntologyLinkStyleEditor(fieldName: string, afterChange?: () => void): void {
+    const owner = this.kplexPlugin.captureAppearanceOwner();
     const key = normalizeOntologyStyleKey(fieldName);
-    const style = this.ontologyLinkStyle(fieldName) ?? {};
-    new OntologyLinkStyleModal(
+    const openingExists = this.ontologyLinkStyle(fieldName) !== undefined;
+    const style = structuredClone(this.ontologyLinkStyle(fieldName) ?? {});
+    const dialog = new OntologyLinkStyleModal(
       this.app,
       fieldName,
       style,
@@ -1932,24 +2243,34 @@ export class KplexSettingTab extends PluginSettingTab {
       async (nextStyle, isCurrent) => this.commitStyleChange(/** Preserve other ontology overrides while committing this normalized key. */ draft => {
         // Normalize keys on write so aliases/casing in the ontology definition do not create
         // duplicate style entries for the same semantic property.
+        const current = draft.hierarchyLinkStyles[key] ?? draft.hierarchyLinkStyles[fieldName];
+        if (openingExists && !current) throw new Error("Edited style no longer exists");
+        const latest = current ?? {};
+        const merged = mergeStyleDraft(style, nextStyle, latest, LINK_COLOR_FIELDS);
+        for (const field of LINK_COLOR_FIELDS) if (!colorValuesEqual(style[field], merged[field])) requireNamedColor(merged[field], draft.colorPreferences);
         delete draft.hierarchyLinkStyles[fieldName];
-        draft.hierarchyLinkStyles[key] = nextStyle;
-      }, isCurrent, afterChange),
+        draft.hierarchyLinkStyles[key] = merged;
+      }, isCurrent, owner, afterChange),
       async isCurrent => this.commitStyleChange(/** Remove only this field's two compatible spellings. */ draft => {
         delete draft.hierarchyLinkStyles[fieldName];
         delete draft.hierarchyLinkStyles[key];
-      }, isCurrent, afterChange),
-    ).open();
+      }, isCurrent, owner, afterChange),
+      this.styleColorContext(owner), () => this.colorDialogs.delete(dialog),
+    );
+    this.colorDialogs.add(dialog); dialog.open();
   }
 
   private openOntologyLinkStylesManager(): void {
-    new OntologyLinkStylesManagerModal(
+    const owner = this.kplexPlugin.captureAppearanceOwner();
+    const dialog = new OntologyLinkStylesManagerModal(
       this.app,
       this.ontologyStyleFields(),
       (fieldName) => this.ontologyLinkStyle(fieldName),
       this.kplexPlugin.settings.baseLinkStyle,
       (fieldName, afterChange) => this.openOntologyLinkStyleEditor(fieldName, afterChange),
-    ).open();
+      this.styleColorContext(owner), () => this.colorDialogs.delete(dialog),
+    );
+    this.colorDialogs.add(dialog); dialog.open();
   }
 
   private openUnassignedOntologyManager(): void {
@@ -1964,7 +2285,8 @@ export class KplexSettingTab extends PluginSettingTab {
   }
 
   private openLegacySettingsImporter(): void {
-    new LegacySettingsImportModal(this.app, this.kplexPlugin, () => this.update()).open();
+    const dialog = new LegacySettingsImportModal(this.app, this.kplexPlugin, /** Refresh the same native Settings owner after a durable import. */ () => this.update(), /** Release exactly this lifetime on close. */ () => this.colorDialogs.delete(dialog));
+    this.colorDialogs.add(dialog); dialog.open();
   }
 
   /** Format the logical cache payload estimate without implying exact IndexedDB disk usage. */
@@ -1978,6 +2300,11 @@ export class KplexSettingTab extends PluginSettingTab {
   /** Build localized native settings and subpages, including shared persisted Plex visibility controls. */
   getSettingDefinitions(): SettingDefinitionItem<DeclarativeSettingKey>[] {
     const translate = createObsidianTranslator();
+    const environment = readObsidianPresentationEnvironment(this.containerEl?.ownerDocument?.defaultView ?? undefined);
+    const hoverModifier = formatShortcut({key: "", modifiers: ["alt"]}, {...environment, inputModes: {...environment.inputModes, keyboard: true}}, {
+      shift: translate("shortcut.shift"), command: translate("shortcut.command"), control: translate("shortcut.control"),
+      option: translate("shortcut.option"), alt: translate("shortcut.alt"),
+    }, true, "") ?? translate("settings.hoverHighlight.modifier");
     const deleteCleanupDescription = createFragment();
     deleteCleanupDescription.createSpan({ text: translate("settings.deletion.removeOntologyLinks.help"), attr: { id: "kplex-remove-ontology-links-on-delete" } });
     const nodeStyles = this.nodeStyleEntries();
@@ -1986,7 +2313,7 @@ export class KplexSettingTab extends PluginSettingTab {
     const customOntologyStyleCount = ontologyStyleFields.filter((field) =>
       hasMeaningfulLinkOverride(this.ontologyLinkStyle(field.name), this.kplexPlugin.settings.baseLinkStyle)
     ).length;
-    return [
+    return this.bindThemeControls([
       {
         type: "group",
         heading: "",
@@ -2012,6 +2339,8 @@ export class KplexSettingTab extends PluginSettingTab {
             type: "group",
             heading: translate("settings.ui.navigation.interaction"),
             items: [
+              { name: translate("settings.hoverHighlight.name"), desc: translate("settings.hoverHighlight.help", {key: hoverModifier}), control: {type: "toggle", key: "hoverHighlightRequiresAlt"} },
+              { name: translate("settings.areaOutline.name"), desc: translate("settings.areaOutline.help", {key: hoverModifier}), control: {type: "toggle", key: "areaOutlineRequiresAlt"} },
               { name: translate("settings.ui.animation.speed"), desc: translate("settings.ui.speed.multiplier.0.off.0.5.slow.1.normal.1.5.fast.2.very"), control: { type: "slider", key: "animationSpeed", min: 0, max: 2, step: 0.1 } },
               { name: translate("settings.ui.auto.fit.on.navigation"), control: { type: "toggle", key: "allowAutozoom" } },
               { name: translate("settings.ui.open.k.plex.in.a.pop.out.window"), desc: translate("settings.ui.when.k.plex.is.opened.and.no.k.plex.view.already.exists"), control: { type: "toggle", key: "startInPopout" } },
@@ -2102,6 +2431,7 @@ export class KplexSettingTab extends PluginSettingTab {
                 heading: translate("settings.ui.relationship.fields"),
                 cls: "kplex-ontology-fields",
                 items: [
+                  { name: translate("settings.ontologyMappings.name"), desc: translate("settings.ontologyMappings.help") },
                   { name: translate("settings.ui.parent.fields"), control: { type: "textarea", key: "hierarchy.parents", rows: 3 } },
                   { name: translate("settings.ui.child.fields"), control: { type: "textarea", key: "hierarchy.children", rows: 3 } },
                   { name: translate("settings.ui.left.friend.jump.fields"), control: { type: "textarea", key: "hierarchy.leftFriends", rows: 3 } },
@@ -2168,16 +2498,28 @@ export class KplexSettingTab extends PluginSettingTab {
         name: translate("settings.ui.visual.styling"),
         desc: translate("settings.ui.canvas.node.and.link.appearance"),
         items: [
-          {
-            type: "group",
-            heading: translate("settings.ui.canvas.labels"),
-            items: [
-              { name: translate("settings.ui.plex.background"), control: { type: "color", key: "backgroundColorHex" } },
-              { name: translate("settings.ui.use.frontmatter.display.names"), desc: translate("settings.ui.use.the.first.non.empty.value.from.the.configured.name.f"), control: { type: "toggle", key: "renderAlias" } },
-              { name: translate("settings.ui.name.fields"), desc: translate("settings.ui.comma.separated.frontmatter.fields.checked.in.order.text"), control: { type: "text", key: "nameFields" } },
-              { name: translate("settings.ui.show.full.tag.names"), control: { type: "toggle", key: "showFullTagName" } },
-            ],
-          },
+          ...this.appearanceThemeDefinitions(),
+          {type: "page", name: translate("colors.colorsPage"), items: [
+            {type: "page", name: translate("colors.standardColors"), items: [
+              {name: translate("colors.palettePreview"), desc: translate("colors.palettePreviewHelp"), render: setting => this.mountStandardOverview(setting)},
+              ...this.standardColorPages(),
+            ]},
+            {type: "page", name: translate("colors.semanticColors"), items: [{type: "group", heading: translate("colors.semanticColors"), items: SEMANTIC_COLOR_SLOTS.map(slot => this.colorAction(
+              translate(`colors.semantic.${slot}`), () => [{label: translate(`colors.semantic.${slot}`), value: {kind: "theme", variable: `--kplex-semantic-${slot}`}, fallback: `var(${SEMANTIC_COLOR_DEFAULTS[slot]}, var(--text-normal))`}],
+              () => this.openSemanticColor(slot), translate(`colors.semanticHelp.${slot}`),
+            ))}]},
+            {type: "group", items: [
+              this.colorAction(translate("settings.ui.plex.background"), () => [{label: translate("settings.ui.plex.background"), value: this.kplexPlugin.settings.backgroundColor, fallback: NATIVE_CANVAS_FILL}], () => this.openCanvasColorEditor()),
+              this.colorAction(translate("compass.title"), () => COMPASS_DIRECTIONS.map(/** Reuse the exact directional source chain shown inside its editor. */ direction => compassSwatchItem(translate(`compass.${direction}`), direction, this.kplexPlugin.settings.colorPreferences.compass.fills[direction])), () => {void this.openCompassSettings();}),
+              {name: translate("colors.namedColors"), action: () => this.openColorPalette()},
+              {name: translate("colors.adopt"), desc: translate("colors.adoptHelp"), action: () => this.openColorAdoption()},
+            ]},
+          ]},
+          {type: "page", name: translate("colors.labelsPage"), items: [
+            { name: translate("settings.ui.use.frontmatter.display.names"), desc: translate("settings.ui.use.the.first.non.empty.value.from.the.configured.name.f"), control: { type: "toggle", key: "renderAlias" } },
+            { name: translate("settings.ui.name.fields"), desc: translate("settings.ui.comma.separated.frontmatter.fields.checked.in.order.text"), control: { type: "text", key: "nameFields" } },
+            { name: translate("settings.ui.show.full.tag.names"), control: { type: "toggle", key: "showFullTagName" } },
+          ]},
           {
             type: "page",
             name: translate("settings.ui.node.styling"),
@@ -2230,13 +2572,13 @@ export class KplexSettingTab extends PluginSettingTab {
                 heading: translate("settings.ui.link.appearance"),
                 items: [
                   { name: translate("settings.ui.link.shape"), control: { type: "dropdown", key: "connectorStyle", defaultValue: "bezier", options: { bezier: translate("settings.ui.curved"), straight: translate("settings.ui.straight") } } },
-                  { name: translate("settings.ui.default.line.color"), control: { type: "color", key: "baseLinkStyle.strokeColorHex" } },
+                  this.colorAction(translate("settings.ui.default.line.color"), () => this.standardSwatchItems("baseLinkStyle").filter(item => item.id === "strokeColor"), () => this.openStandardColor("baseLinkStyle", "strokeColor")),
                   { name: translate("settings.ui.default.line.width"), control: { type: "slider", key: "baseLinkStyle.strokeWidth", min: 0.5, max: 8, step: 0.5 } },
                   { name: translate("settings.ui.default.line.style"), control: { type: "dropdown", key: "baseLinkStyle.strokeStyle", defaultValue: "solid", options: { solid: translate("settings.ui.solid"), dashed: translate("settings.ui.dashed"), dotted: translate("settings.ui.dotted") } } },
                   { name: translate("settings.ui.start.arrowhead"), control: { type: "dropdown", key: "baseLinkStyle.startArrowHead", defaultValue: "none", options: arrowOptions(translate) } },
                   { name: translate("settings.ui.end.arrowhead"), control: { type: "dropdown", key: "baseLinkStyle.endArrowHead", defaultValue: "none", options: arrowOptions(translate) } },
                   { name: translate("settings.ui.show.relationship.labels"), control: { type: "toggle", key: "baseLinkStyle.showLabel" } },
-                  { name: translate("settings.ui.relationship.label.color"), control: { type: "color", key: "baseLinkStyle.textColorHex" } },
+                  this.colorAction(translate("settings.ui.relationship.label.color"), () => this.standardSwatchItems("baseLinkStyle").filter(item => item.id === "textColor"), () => this.openStandardColor("baseLinkStyle", "textColor")),
                   { name: translate("settings.ui.relationship.label.size"), control: { type: "slider", key: "baseLinkStyle.fontSize", min: 7, max: 24, step: 1 } },
                   { name: translate("settings.ui.cross.link.opacity"), desc: translate("settings.ui.opacity.of.extra.links.between.visible.non.central.nodes"), control: { type: "slider", key: "crossLinkOpacity", min: 0, max: 100, step: 5 } },
                   {
@@ -2375,7 +2717,71 @@ export class KplexSettingTab extends PluginSettingTab {
           },
         ],
       },
-    ];
+    ]);
+  }
+
+  /** Mount only appearance scalars with an activation-bound callback, including global-search rows. */
+  private bindThemeControls(items: SettingDefinitionItem<DeclarativeSettingKey>[]): SettingDefinitionItem<DeclarativeSettingKey>[] {
+    return items.map(/** Global workflow controls retain their existing native declarative behavior. */ item => {
+      if ("type" in item && item.type === "page") return {...item, items: item.items && this.bindThemeControls(item.items)};
+      if ("type" in item) return {...item, items: item.items?.map(/** Groups contain only settings and pages, preserving native search typing. */ child =>
+        "type" in child ? {...child, items: child.items && this.bindThemeControls(child.items)} : this.bindThemeScalar(child))};
+      return this.bindThemeScalar(item);
+    });
+  }
+
+  /** Bind the finite theme-owned native scalar types without changing global control ownership. */
+  private bindThemeScalar(item: SettingDefinition<DeclarativeSettingKey>): SettingDefinition<DeclarativeSettingKey> {
+      if (!("control" in item) || !item.control) return item;
+      const control = item.control;
+      if (!/^(baseNodeStyle\.|centralNodeStyle\.|baseLinkStyle\.|backgroundColorHex$)/.test(control.key)
+        || (control.type !== "slider" && control.type !== "toggle" && control.type !== "dropdown")) return item;
+      return {name: item.name, desc: item.desc, searchable: item.searchable, visible: item.visible, render: /** Recreate a scalar on activation; retired handlers cannot save into its replacement. */ (setting: Setting) => {
+        let active = true, owner = this.kplexPlugin.captureAppearanceOwner(), generation = 0;
+        let mounted: {pending: number; refresh: () => void} | null = null;
+        /** The scalar has no unsubmitted draft: a switch replaces its native control with the new effective value. */
+        const mount = (): void => {
+          for (const input of Array.from(setting.controlEl.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input,select"))) input.disabled = true;
+          setting.clear(); owner = this.kplexPlugin.captureAppearanceOwner();
+          const opening = owner, mount = ++generation, state = {pending: 0, refresh: (): void => {}}; mounted = state;
+          const disabled = !!this.kplexPlugin.settings.appearanceThemesFuture || !!this.kplexPlugin.settings.colorPreferencesFuture
+            || (typeof control.disabled === "function" ? control.disabled() : !!control.disabled);
+          /** Capture at mount, never infer ownership from the selected theme when a delayed native event arrives. */
+          const change = async (value: string | number | boolean): Promise<void> => {
+            if (!active || mount !== generation || disabled || !this.kplexPlugin.isAppearanceOwnerCurrent(opening)) return;
+            state.pending++;
+            try {await this.setControlValue(control.key, value, opening);}
+            catch (error) {console.error("K-Plex appearance control was not saved", error); new Notice(this.kplexPlugin.translator("styles.operation.notSaved"));}
+            finally {state.pending--; if (active && mounted === state && !state.pending) state.refresh();}
+          };
+          const value = this.getControlValue(control.key) ?? control.defaultValue;
+          if (control.type === "slider") setting.addSlider(/** Retain native bounds, tooltip and keyboard gestures. */ slider => {
+            slider.setLimits(control.min, control.max, control.step).setValue(Number(value)).setDynamicTooltip().setDisabled(disabled).onChange(change);
+            slider.sliderEl.setAttribute("aria-label", item.name);
+            state.refresh = /** Same-activation edits update peers without replacing a live slider or emitting another change. */ () => {slider.setValue(Number(this.getControlValue(control.key) ?? control.defaultValue));};
+          });
+          else if (control.type === "toggle") setting.addToggle(/** Initial seeding never submits a save. */ toggle => {
+            toggle.setValue(Boolean(value)).setDisabled(disabled).onChange(change); toggle.toggleEl.setAttribute("aria-label", item.name);
+            state.refresh = /** Restore the committed value after another surface or a failed immediate save. */ () => {toggle.setValue(Boolean(this.getControlValue(control.key) ?? control.defaultValue));};
+          });
+          else setting.addDropdown(/** Reuse the original finite choices and native select. */ dropdown => {
+            dropdown.addOptions(control.options).setValue(typeof value === "string" ? value : "").setDisabled(disabled).onChange(change); dropdown.selectEl.setAttribute("aria-label", item.name);
+            state.refresh = /** Preserve native choices while reflecting the current committed field. */ () => {const value = this.getControlValue(control.key) ?? control.defaultValue; dropdown.setValue(typeof value === "string" ? value : "");};
+          });
+        };
+        mount();
+        const release = this.subscribeThemeRow(setting, /** Activation or native adoption replaces this immediate scalar's handlers. */ migrated => {
+          if (active && setting.settingEl.isConnected && (migrated || !this.kplexPlugin.isAppearanceOwnerCurrent(owner))) mount();
+          else if (active && mounted && !mounted.pending) mounted.refresh();
+        }, /** A closed/migrated settings window cannot retain scalar handlers. */ () => {active = false;});
+        return release;
+      }};
+  }
+
+  /** Share the durable appearance writer and truthful refresh recovery for native scalar controls. */
+  private async commitAppearanceControl(edit: (draft: StyleSettingsDraft) => void, owner?: AppearanceOwner): Promise<void> {
+    const result = await this.kplexPlugin.updateStyleSettings(edit, owner ?? this.kplexPlugin.captureAppearanceOwner());
+    if (result.refreshPending) new Notice(this.kplexPlugin.translator("styles.operation.savedRefreshPending"));
   }
 
   /** Parse permanently scope-qualified device control keys; global-search rows never depend on a selected editor scope. */
@@ -2449,7 +2855,7 @@ export class KplexSettingTab extends PluginSettingTab {
     const hierarchyKey = HIERARCHY_KEY_MAP[key];
     if (hierarchyKey) return csv(this.kplexPlugin.settings.hierarchy[hierarchyKey]);
     if (key === "excludeFilepathsCsv") return csv(this.kplexPlugin.settings.excludeFilepaths);
-    if (key === "backgroundColorHex") return this.kplexPlugin.settings.backgroundColor.slice(0, 7).toLowerCase();
+    if (key === "backgroundColorHex") return sixHex(this.kplexPlugin.settings.backgroundColor).toLowerCase();
     if (key === "baseLinkStyle.strokeColorHex") return sixHex(this.kplexPlugin.settings.baseLinkStyle.strokeColor, "#696969").toLowerCase();
     if (key === "baseLinkStyle.strokeWidth") return this.kplexPlugin.settings.baseLinkStyle.strokeWidth ?? DEFAULT_LINK_STYLE.strokeWidth ?? 1;
     if (key === "baseLinkStyle.strokeStyle") return this.kplexPlugin.settings.baseLinkStyle.strokeStyle ?? "solid";
@@ -2466,7 +2872,7 @@ export class KplexSettingTab extends PluginSettingTab {
   }
 
   /** Apply every declarative control through the plugin's shared settings-impact classifier. */
-  async setControlValue(key: string, value: unknown): Promise<void> {
+  async setControlValue(key: string, value: unknown, owner?: AppearanceOwner): Promise<void> {
     const typography = this.typographyKey(key);
     if (typography) {
       const scalar = sanitizeTypographyValue(typography.field, value);
@@ -2508,60 +2914,49 @@ export class KplexSettingTab extends PluginSettingTab {
 
     if (key === "backgroundColorHex") {
       const hex = String(value).slice(0, 7).toLowerCase();
-      this.kplexPlugin.settings.backgroundColor = `${hex}ff`;
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.backgroundColor = `${hex}ff`;}, owner);
       return;
     }
 
     if (key === "baseLinkStyle.strokeColorHex") {
-      this.kplexPlugin.settings.baseLinkStyle.strokeColor = eightHex(String(value));
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.strokeColor = eightHex(String(value));}, owner);
       return;
     }
     if (key === "baseLinkStyle.strokeWidth") {
-      this.kplexPlugin.settings.baseLinkStyle.strokeWidth = Math.max(0.5, Math.min(8, Number(value) || 1));
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.strokeWidth = Math.max(0.5, Math.min(8, Number(value) || 1));}, owner);
       return;
     }
     if (key === "baseLinkStyle.strokeStyle") {
       const next = String(value);
-      this.kplexPlugin.settings.baseLinkStyle.strokeStyle = next === "dashed" || next === "dotted" ? next : "solid";
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.strokeStyle = next === "dashed" || next === "dotted" ? next : "solid";}, owner);
       return;
     }
     if (key === "baseLinkStyle.startArrowHead") {
-      this.kplexPlugin.settings.baseLinkStyle.startArrowHead = String(value) as Arrowhead;
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.startArrowHead = String(value) as Arrowhead;}, owner);
       return;
     }
     if (key === "baseLinkStyle.endArrowHead") {
-      this.kplexPlugin.settings.baseLinkStyle.endArrowHead = String(value) as Arrowhead;
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.endArrowHead = String(value) as Arrowhead;}, owner);
       return;
     }
     if (key === "baseLinkStyle.showLabel") {
-      this.kplexPlugin.settings.baseLinkStyle.showLabel = Boolean(value);
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.showLabel = Boolean(value);}, owner);
       return;
     }
     if (key === "baseLinkStyle.textColorHex") {
-      this.kplexPlugin.settings.baseLinkStyle.textColor = eightHex(String(value));
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.textColor = eightHex(String(value));}, owner);
       return;
     }
     if (key === "baseLinkStyle.fontSize") {
-      this.kplexPlugin.settings.baseLinkStyle.fontSize = Math.max(7, Math.min(24, Number(value) || 10));
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseLinkStyle.fontSize = Math.max(7, Math.min(24, Number(value) || 10));}, owner);
       return;
     }
     if (key === "baseNodeStyle.gateRadius") {
-      this.kplexPlugin.settings.baseNodeStyle.gateRadius = Number(value);
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseNodeStyle.gateRadius = Number(value);}, owner);
       return;
     }
     if (key === "baseNodeStyle.maxLabelLength") {
-      this.kplexPlugin.settings.baseNodeStyle.maxLabelLength = Math.max(8, Math.min(120, Math.round(Number(value) || 30)));
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseNodeStyle.maxLabelLength = Math.max(8, Math.min(120, Math.round(Number(value) || 30)));}, owner);
       return;
     }
     if (key === "baseFontSize") {
@@ -2570,16 +2965,18 @@ export class KplexSettingTab extends PluginSettingTab {
       return;
     }
     if (key === "baseNodeStyle.maxWidth") {
-      this.kplexPlugin.settings.baseNodeStyle.maxWidth = Math.max(160, Math.min(800, Math.round(Number(value) || 286)));
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.baseNodeStyle.maxWidth = Math.max(160, Math.min(800, Math.round(Number(value) || 286)));}, owner);
       return;
     }
     if (key === "centralNodeStyle.maxWidth") {
-      this.kplexPlugin.settings.centralNodeStyle.maxWidth = Math.max(180, Math.min(1000, Math.round(Number(value) || 370)));
-      await this.kplexPlugin.saveSettings(false);
+      await this.commitAppearanceControl(/** Commit this captured control’s finite scalar through the theme owner. */ draft => {draft.centralNodeStyle.maxWidth = Math.max(180, Math.min(1000, Math.round(Number(value) || 370)));}, owner);
       return;
     }
 
+    if (STYLE_SETTINGS_KEYS.some(/** Generic appearance controls still use the same finite queue and owner fence. */ field => field === key)) {
+      await this.commitAppearanceControl(/** Never assign an appearance root before its durable commit. */ draft => {Object.assign(draft, {[key]: structuredClone(value)});}, owner);
+      return;
+    }
     const settingKey = key as keyof KplexSettings;
     (this.kplexPlugin.settings as unknown as Record<string, unknown>)[settingKey] = value;
     await this.kplexPlugin.saveSettings();

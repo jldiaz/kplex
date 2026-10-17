@@ -2,10 +2,14 @@
  * Passive, session-only startup measurements at existing Obsidian orchestration boundaries.
  * Phase progress is always available; detailed timing and owner overlap tracking require the native
  * test opt-in before plugin enable. No timers, I/O, authority decisions or work scheduling live here.
- * Owner identities remain private and are discarded when strict readiness freezes the report.
+ * Owner identities remain private and are discarded when strict readiness freezes detailed timings.
+ * Fixed-size aggregate work counters continue through readiness until unload, independently of opt-in.
  */
 export type StartupLane = "source" | "hydration";
 export type StartupProgress = { phase: string; pass: number; processed: number; total: number | null };
+/** Constant-size lifetime counters; starts include cancelled work, saves require pointer activation. */
+type StartupSessionWork = { sourceInventoryPasses: number; fullBuildStarts: number; nodeCatalogStarts: number;
+  completeSnapshotSaves: number; checkpointSaves: number };
 type Phase = StartupProgress & { lane: StartupLane; startedMs: number; endedMs: number | null; counters: Record<string, number>; uniqueOwners: number };
 
 /** Records bounded phase boundaries without changing the production startup sequence. */
@@ -13,6 +17,9 @@ export class StartupDiagnostics {
   private enabled = false;
   private startedAt = 0;
   private frozen = false;
+  private disposed = false;
+  private sessionWork: StartupSessionWork = { sourceInventoryPasses: 0, fullBuildStarts: 0, nodeCatalogStarts: 0,
+    completeSnapshotSaves: 0, checkpointSaves: 0 };
   private phases: Phase[] = [];
   private active = new Map<StartupLane, Phase>();
   private passes = new Map<string, number>();
@@ -67,6 +74,10 @@ export class StartupDiagnostics {
     const row = this.active.get(lane);
     return row ? { phase: row.phase, pass: row.pass, processed: row.processed, total: row.total } : null;
   }
+  /** Count an actual existing work boundary, including work after readiness; never retain owners. */
+  recordWork(kind: keyof StartupSessionWork): void {
+    if (!this.disposed) this.sessionWork[kind] = Math.min(Number.MAX_SAFE_INTEGER, this.sessionWork[kind] + 1);
+  }
   /** Freeze the measured lifetime and release all private owner identities on strict readiness. */
   finish(): void {
     if (!this.enabled || this.frozen) return;
@@ -87,10 +98,13 @@ export class StartupDiagnostics {
   dispose(): void {
     this.owners.clear();
     this.frozen = true;
+    this.disposed = true;
   }
-  /** Export aggregate copies only; overlapping lanes must not be summed as wall-clock time. */
-  snapshot(): { startedAtMs: number; enabled: boolean; frozen: boolean; milestones: Record<string, number>; phases: Phase[]; overlaps: typeof this.overlaps } {
+  /** Export aggregate copies only; frozen startup timings and ongoing session work have distinct lifetimes. */
+  snapshot(): { startedAtMs: number; enabled: boolean; frozen: boolean; sessionWork: StartupSessionWork;
+    milestones: Record<string, number>; phases: Phase[]; overlaps: typeof this.overlaps } {
     return { startedAtMs: this.startedAt, enabled: this.enabled, frozen: this.frozen, milestones: { ...this.milestones },
+      sessionWork: { ...this.sessionWork },
       phases: this.phases.map(row => ({ ...row, counters: { ...row.counters } })), overlaps: this.overlaps.map(row => ({ ...row })) };
   }
 }

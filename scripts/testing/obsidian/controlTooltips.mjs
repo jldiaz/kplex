@@ -1,8 +1,10 @@
 /**
  * Exact-build native tooltip acceptance in the explicitly named disposable small vault. Trusted
  * pointer moves exercise real host CSS, every-hover delay, measured flipping, sliders, portalled
- * controls, the extended canvas menu/native background draft and two-way popout ownership.
- * The temporary probe owns no files; finally restores the
+ * controls, compact native node titles without duplicate host hints, the extended canvas menu/native
+ * background draft and two-way popout ownership.
+ * KPLEX_TOOLTIP_NODE_ONLY=true limits acceptance to canvas/node/gate hints and window migration;
+ * that scope does not claim the separate control/menu/color cases. The temporary probe owns no files; finally restores the
  * saved workspace/display modes and removes observation/global state even after assertion failure.
  */
 import assert from 'node:assert/strict';
@@ -18,7 +20,8 @@ assert.equal(vaultName,'kplex-test-small','Select the disposable small vault exp
 const target=validateTarget({vaultName,vaultPath:process.env.KPLEX_TEST_VAULT_PATH,configDir:process.env.KPLEX_TEST_CONFIG_DIR});
 const output=process.env.KPLEX_HOST_REPORT_DIR;
 assert(output&&(!existsSync(output)||!readdirSync(output).length),'Choose a fresh report directory');mkdirSync(output,{recursive:true});
-const report={status:'running',startedAt:new Date().toISOString(),node:process.version,artifacts:{},scenarios:[],limitations:['Native rectangles and trusted pointer input establish functional behavior, not physical-device or subjective paint acceptance.']};
+const nodeOnly=process.env.KPLEX_TOOLTIP_NODE_ONLY==='true';
+const report={scope:nodeOnly?'node-hints-main-popout-return':'complete-control-hints',status:'running',startedAt:new Date().toISOString(),node:process.version,artifacts:{},scenarios:[],limitations:['Native rectangles and trusted pointer input establish functional behavior, not physical-device or subjective paint acceptance.']};
 writeFileSync(join(output,'driver-source.mjs'),readFileSync(fileURLToPath(import.meta.url)));
 /** Reject explicit CLI errors as well as process/transport failures. */
 function cli(name,...args){const r=spawnSync(obsidianCliExecutable(),[`vault=${vaultName}`,name,...args],{cwd:root,encoding:'utf8',timeout:30000,killSignal:'SIGKILL',maxBuffer:4*1024*1024});if(r.error||r.status!==0||/^Error:/m.test(r.stdout))throw r.error??Error(r.stderr||r.stdout);return r.stdout.trim()}
@@ -27,7 +30,7 @@ function evaluate(code){return JSON.parse(cli('eval',`code=${code}`).replace(/^=
 /** Poll transport without blocking native rendering or altering throttling. */
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 /** Install one cancellable native owner with no product debug entry point. */
-function probe(){
+function probe(nodeOnly=false){
  const p=app.plugins.plugins['k-plex'],remote=require('@electron/remote'),win=remote.getCurrentWindow();
  if(!p?.actionManager||window.__kplexTooltipProbe||app.setting.isOpen||document.querySelector('.modal-container,.menu,.kplex-wander-controls'))throw Error('Clean native prerequisites required');
  const c=window.__kplexTooltipProbe={layout:app.workspace.getLayout(),originalColor:p.settings.backgroundColor,cases:[],cancelled:false,done:false};
@@ -58,6 +61,19 @@ function probe(){
   check(appeared-start>=600,'Warm/native shortcut bypassed delay');check(h.bottom<=r.top-7||h.top>=r.bottom+7,'Hint overlaps control');check(h.left>=7&&h.right<=doc.defaultView.innerWidth-7&&h.top>=7&&h.bottom<=doc.defaultView.innerHeight-7,'Hint outside viewport');check(style.pointerEvents==='none','Hint intercepts control');check(doc.querySelectorAll('.tooltip').length===1,'Duplicate native/browser hint');check(!element.hasAttribute('title'),'Competing title hint');if(expectedSide)check(side===expectedSide,'Incorrect placement side');
   passed(id,{elapsedMs:Math.round(appeared-start),side,text:hint.firstChild.textContent,control:{top:r.top,bottom:r.bottom},hint:{top:h.top,bottom:h.bottom,height:h.height},background:style.backgroundColor});
  };
+ /** Keep the browser-owned compact title, accessible full name and independent host gate hints. */
+ const nodeHints=async(scope,id)=>{
+  const doc=scope.ownerDocument;c.timerWindow=doc.defaultView;
+  const label=[...scope.querySelectorAll('.kplex-thought-text')].find(el=>{const r=el.getBoundingClientRect();return el.contains(doc.elementFromPoint(Math.round(r.left+r.width/2),Math.round(r.top+r.height/2)))});
+  check(label,'Hit-testable node label required');const node=label.closest('.kplex-thought'),name=doc.getElementById(node.getAttribute('aria-labelledby'));
+  check(!node.hasAttribute('aria-label')&&name?.textContent?.trim(),'Node accessible name lost or duplicate host tooltip retained');check(Boolean(label.getAttribute('title')),'Compact browser title lost');
+  const inputOwner=doc.defaultView.require('@electron/remote').getCurrentWindow();inputOwner.focus();inputOwner.webContents.focus();await until(()=>doc.hasFocus(),'Node input window not focused');inputOwner.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});await wait(150);move(label);await wait(2200);
+  check(!doc.querySelector('.tooltip'),'Node still shows a competing styled hint');
+  const gate=[...node.querySelectorAll('[data-kplex-gate]')].find(el=>{const r=el.getBoundingClientRect();return el.contains(doc.elementFromPoint(Math.round(r.left+r.width/2),Math.round(r.top+r.height/2)))});check(gate,'Hit-testable gate required');move(gate);await until(()=>doc.querySelector('.tooltip'),'Independent gate hint lost');
+  check(doc.querySelectorAll('.tooltip').length===1&&doc.querySelector('.tooltip').textContent===gate.getAttribute('aria-label'),'Gate hint changed or duplicated');
+  passed(id,{accessibleName:true,compactTitle:true,nodeStyledHints:0,gateStyledHints:1,observationMs:2200,browserTooltipPaint:'Browser chrome is outside the DOM; title retained, visual/device acceptance separate'});
+  inputOwner.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});await wait(150);
+ };
  /** Restore the owning layout and modes, retiring timers through normal stop/unmount. */
  c.cleanup=()=>{if(c.cleanupTask)return c.cleanupTask;c.cleanupTask=(async()=>{
   c.cancelled=true;c.observer?.disconnect();p.dismissKplexMenu();
@@ -74,6 +90,8 @@ function probe(){
  c.task=new Promise(resolve=>window.setTimeout(resolve,0)).then(async()=>{
   remote.app.focus({steal:true});win.show();win.focus();win.webContents.focus();await until(()=>document.hasFocus()&&!document.hidden,'Native foreground unavailable',5000);check(acquire(),'Rendered Plex required');c.originalLeafId=leaf.id;c.originalModes=leaf.view.displayModes.getSnapshot();if(c.originalModes.fullscreen)leaf.view.displayModes.toggleFullscreen();leaf.view.displayModes.setZen(false);await wait(150);
   check(!root.hasAttribute('aria-label')&&document.getElementById(root.getAttribute('aria-labelledby'))?.textContent===p.translator('view.displayName'),'Canvas accessible naming lost or native tooltip source retained');const canvas=root.querySelector('.kplex-plex'),b=canvas.getBoundingClientRect();win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(b.left+15),y:Math.round(b.top+35)});await wait(1200);check(!document.querySelector('.tooltip'),'Canvas background has a tooltip');passed('canvas-no-tooltip',{name:p.translator('view.displayName')});
+  await nodeHints(root,'main-node-single-hint');
+  if(!nodeOnly){
   await hover(root.querySelector('.kplex-top-actions button[aria-label]:not(:disabled)'),'top-toolbar','below');
   await hover(root.querySelector('.kplex-zoom-controls button'),'zoom-bottom','above');
   await action('view.wander.start');await until(()=>root.querySelector('.kplex-wander-controls'),'Wander controls missing');await click(root.querySelector('.kplex-wander-controls button:nth-child(2)'));
@@ -99,15 +117,17 @@ function probe(){
   await openMenu();c.ownedSettings=true;await select('actions.canvasSettings');await until(()=>app.setting.isOpen&&p.settingsTab.containerEl.getClientRects().length,'K-Plex settings did not open');app.setting.close();await until(()=>!app.setting.isOpen,'Settings failed to close');c.ownedSettings=false;passed('canvas-menu-settings');
   c.reportOriginal=p.reportBug;p.reportBug=function(origin,surfaceId){c.reportCall={originIsCanvas:origin===root.querySelector('.kplex-plex'),surfaceId}};await openMenu();await select('support.reportTitle');check(c.reportCall?.originIsCanvas&&c.reportCall.surfaceId===surface,'Support menu did not reuse synchronous owning-view report flow');p.reportBug=c.reportOriginal;c.reportOriginal=null;passed('canvas-menu-report-route',{clipboardAndExternalEffects:'Existing report flow stubbed only at its entry point; no clipboard or external navigation in this driver'});
   p.showKplexMenuAtMouseEvent=c.menuOriginal;c.menuOriginal=null;
+  }
   const mainParent=leaf.parent,mainRoot=root;app.workspace.moveLeafToPopout(leaf);await until(()=>leaf.view.contentEl.ownerDocument!==document&&leaf.view.contentEl.querySelector('.kplex-app')!==mainRoot,'Popout remount absent');popDoc=leaf.view.contentEl.ownerDocument;await until(()=>popDoc.body.style.getPropertyValue('--zoom-factor'),'Popout native chrome absent');await leaf.view.waitUntilReady();const popRoot=leaf.view.contentEl.querySelector('.kplex-app');
-  await hover(popRoot.querySelector('.kplex-zoom-controls button'),'popout-bottom','above');check(!document.querySelector('.kplex-control-tooltip'),'Source window retained hint');
-  c.timerWindow=window;leaf.parent.removeChild(leaf);mainParent.insertChild(mainParent.children.length,leaf);await app.workspace.revealLeaf(leaf);app.workspace.setActiveLeaf(leaf,{focus:true});await until(()=>leaf.view.contentEl.ownerDocument===document&&leaf.view.contentEl.querySelector('.kplex-app')!==popRoot,'Return remount absent');await until(acquire,'Main surface absent');await leaf.view.waitUntilReady();await wait(200);await hover(root.querySelector('.kplex-zoom-controls button'),'returned-main-bottom','above');passed('popout-retired-owner',{sourceHints:popDoc.querySelectorAll('.kplex-control-tooltip').length});check(!popDoc.querySelector('.kplex-control-tooltip'),'Retired popout hint leaked');
+  await nodeHints(popRoot,'popout-node-single-hint');
+  if(!nodeOnly)await hover(popRoot.querySelector('.kplex-zoom-controls button'),'popout-bottom','above');check(!document.querySelector('.kplex-control-tooltip'),'Source window retained hint');
+  c.timerWindow=window;leaf.parent.removeChild(leaf);mainParent.insertChild(mainParent.children.length,leaf);await app.workspace.revealLeaf(leaf);app.workspace.setActiveLeaf(leaf,{focus:true});await until(()=>leaf.view.contentEl.ownerDocument===document&&leaf.view.contentEl.querySelector('.kplex-app')!==popRoot,'Return remount absent');await until(acquire,'Main surface absent');await leaf.view.waitUntilReady();await wait(200);await nodeHints(root,'returned-node-single-hint');if(!nodeOnly)await hover(root.querySelector('.kplex-zoom-controls button'),'returned-main-bottom','above');passed('popout-retired-owner',{sourceHints:popDoc.querySelectorAll('.kplex-control-tooltip').length});check(!popDoc.querySelector('.kplex-control-tooltip'),'Retired popout hint leaked');
  }).then(()=>{c.status='passed'},error=>{c.status='failed';c.error=String(error?.stack??error)}).finally(async()=>{try{await c.cleanup()}catch(error){c.cleanupError=String(error?.stack??error);c.status='failed'}c.done=true});return true;
 }
 try{
  assert.equal(cli('vault','info=path').replace(/^path /,''),target.vault);
  for(const name of ['main.js','styles.css','manifest.json']){const built=readFileSync(join(root,'dist',name)),installed=readFileSync(join(target.pluginDir,name));assert(built.equals(installed),`${name}: exact-build staging required`);report.artifacts[name]=createHash('sha256').update(installed).digest('hex')}
- cli('dev:errors','clear');evaluate(`(${probe.toString()})()`);const end=Date.now()+120000;let result;
+ cli('dev:errors','clear');evaluate(`(${probe.toString()})(${nodeOnly})`);const end=Date.now()+120000;let result;
  do{await delay(500);result=evaluate('(()=>{const c=window.__kplexTooltipProbe;return{done:c.done,status:c.status,error:c.error,cleanupError:c.cleanupError,cases:c.cases,cleaned:c.cleaned}})()');if(result.done)break;assert(Date.now()<end,'Native tooltip deadline exceeded')}while(true);
  report.scenarios=result.cases;report.cleanup=result.cleaned;report.error=result.error??result.cleanupError;assert.equal(result.status,'passed',report.error);assert.equal(result.cleaned,true);const errors=cli('dev:errors');report.errors=errors;assert(!errors||/^No errors captured\.?$/i.test(errors));report.status='passed';
 }catch(error){report.error=String(error?.stack??error);report.status='failed';process.exitCode=1}

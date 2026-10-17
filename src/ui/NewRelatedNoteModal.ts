@@ -1,5 +1,5 @@
 /**
- * Native Obsidian shell and shared React composer for related-note creation. The plugin owns mutations; the modal owns focus, suggestions and cleanup, and consumes localized copy.
+ * Native Obsidian shell and shared React composer for related-note creation. The plugin owns mutations; the modal owns focus, suggestions, failure-only recovery and cleanup, and consumes localized copy. Recovery retains the exact durable file and displays the failure reason without enabling fresh creation.
  */
 import { SavedRelationshipPendingError } from "../adapters/obsidian/relationshipMetadataWrite";
 import { Modal, Notice, type TFile, type Scope, type WorkspaceLeaf } from "obsidian";
@@ -83,6 +83,7 @@ function RelatedNoteComposer({
   const [continuation, setContinuation] = useState<CompletionIntent>(session.continuation);
   const [savedPending, setSavedPending] = useState<GraphPage | null>(null);
   const [partialFile, setPartialFile] = useState<TFile | null>(null);
+  const [partialFailure, setPartialFailure] = useState<string | null>(null);
   const [editAfterCreate, setEditAfterCreate] = useState(() => plugin.settings.editNewNodeAfterCreate);
   const excalidrawAvailable = plugin.isExcalidrawAvailable();
   const [defaultCreateType, setDefaultCreateType] = useState<"markdown" | "excalidraw">(() =>
@@ -143,14 +144,14 @@ function RelatedNoteComposer({
     return plugin.rememberRelationshipOntology(role, field);
   };
 
-  /** Complete only the still-current invocation; another resets only after confirmed publication. */
-  const complete = async (page: GraphPage, intent: CompletionIntent, createdFile: boolean): Promise<void> => {
-    onCommitted?.({ state: "saved-published", page });
+  /** Complete a durable save for the current invocation; new-file writes can finish while graph reconciliation is pending. */
+  const complete = async (page: GraphPage, intent: CompletionIntent, createdFile: boolean, state: RelatedNoteCommit["state"] = "saved-published"): Promise<void> => {
+    onCommitted?.({ state, page });
     if (!session.canComplete()) return;
     plugin.requestNodeFlair(page.path);
     if (intent === "another") {
       setSelectedTarget(null); setQuery(""); setAlias(""); setNoteTyped(false); setAliasFocused(false);
-      setPartialFile(null); setOntologyTyped(false); setBrowseOntology(false);
+      setPartialFile(null); setPartialFailure(null); setOntologyTyped(false); setBrowseOntology(false);
       session.focusName();
       return;
     }
@@ -189,10 +190,13 @@ function RelatedNoteComposer({
     }
     if (!session.isSessionOpen()) return;
     const existingFile = error instanceof PartialRelatedFileError ? error.file : file;
-    if (existingFile) setPartialFile(existingFile);
-    new Notice(existingFile
-      ? plugin.translator("addRelated.partialCreation", { path: existingFile.path, error: error instanceof Error ? error.message : String(error) })
-      : plugin.translator("addRelated.createFailed", { error: error instanceof Error ? error.message : String(error) }), 5000);
+    const detail = error instanceof Error ? error.message : String(error);
+    if (existingFile) {
+      setPartialFile(existingFile);
+      setPartialFailure(detail);
+      return;
+    }
+    new Notice(plugin.translator("addRelated.createFailed", { error: detail }), 5000);
   };
 
   /** Link the captured note, with validity checked after remembered ontology awaits. */
@@ -221,10 +225,10 @@ function RelatedNoteComposer({
       if (!file) return;
       if (!session.isSessionOpen()) return;
       if (plugin.app.vault.getFileByPath(file.path) !== file) throw new Error(plugin.translator("addRelated.endpointChanged"));
-      setPartialFile(file);
-      setDefaultCreateType(kind); void plugin.rememberNewNodeDefaultType(kind);
-      const page = await plugin.linkNewRelatedFile(refreshCapturedPage(plugin, origin), role, file, field, alias, query, Boolean(partialFile));
-      await complete(page, intent, true);
+      // Retain recovery state only after a failure. A durable file is normal progress while linking.
+      if (!partialFile) { setDefaultCreateType(kind); void plugin.rememberNewNodeDefaultType(kind); }
+      const result = await plugin.linkNewRelatedFile(refreshCapturedPage(plugin, origin), role, file, field, alias, query, Boolean(partialFile));
+      await complete(result.page, intent, true, result.state);
     } catch (error) { reportFailure(error, undefined, file ?? undefined); }
     finally { busyRef.current = false; session.setWriting(false); if (session.isSessionOpen()) setBusy(false); }
   };
@@ -284,7 +288,7 @@ function RelatedNoteComposer({
     setOntology(value);
   };
 
-  const createAvailable = !savedPending && !selectedTarget && !webUrl && (Boolean(partialFile) || nameValidation.valid && !nameValidation.existing);
+  const createAvailable = !savedPending && !partialFile && !selectedTarget && !webUrl && nameValidation.valid && !nameValidation.existing;
   const placeholderAvailable = createAvailable && origin.file?.extension === "md";
   const webLinkAvailable = !selectedTarget && Boolean(webUrl) && origin.file?.extension === "md";
   const noteSearch = createElement(FuzzySearchInput<GraphPage>, {
@@ -476,18 +480,21 @@ function RelatedNoteComposer({
       .filter(/** URLs and unresolved notes do not support an editor completion. */ intent => intent !== "edit" || Boolean(selectedTarget?.file || !webUrl))
       .map(/** Localized finite choices cannot inject executable preferences. */ intent => createElement("option", { key: intent, value: intent }, plugin.translator(`addRelated.completion.${intent}`)))),
   );
-  const recovery = savedPending ? createElement("div", { role: "status" },
-    plugin.translator("addRelated.savedPending"),
-    createElement("button", { type: "button", onClick: /** Reconcile saved content without reissuing its mutation. */ () => {
+  const recovery = savedPending ? createElement("div", { className: "kplex-add-related-recovery", role: "status" },
+    createElement("div", null, plugin.translator("addRelated.savedPending")),
+    createElement("div", { className: "kplex-add-related-recovery-actions" },
+      createElement("button", { type: "button", onClick: /** Reconcile saved content without reissuing its mutation. */ () => {
       void plugin.index.prepareRelationshipPair(origin.file?.path ?? origin.path, savedPending.path).then(/** Clear the form only after explicit confirmed reconciliation. */ ready => {
         if (!ready || !session.isSessionOpen()) return;
-        setSavedPending(null); setPartialFile(null); setSelectedTarget(null); setQuery(""); setAlias(""); setNoteTyped(false); session.focusName();
+        setSavedPending(null); setPartialFile(null); setPartialFailure(null); setSelectedTarget(null); setQuery(""); setAlias(""); setNoteTyped(false); session.focusName();
       }).catch(/** Keep saved status and input on an unsuccessful reconciliation. */ () => {});
-    } }, plugin.translator("addRelated.refreshSaved")),
-  ) : partialFile ? createElement("div", { role: "status" },
-    plugin.translator("addRelated.recoverFile", { path: partialFile.path }),
-    createElement("button", { type: "button", disabled: busy || Boolean(savedPending), onClick: /** Recover the existing file relationship rather than creating a duplicate. */ () => submit() }, plugin.translator("addRelated.linkCreatedFile")),
-    createElement("button", { type: "button", onClick: /** Deliberately inspect the retained file in the supported editor. */ () => { void plugin.openInDocumentLeaf(partialFile); } }, plugin.translator("addRelated.openCreatedFile")),
+    } }, plugin.translator("addRelated.refreshSaved"))),
+  ) : partialFile ? createElement("div", { className: "kplex-add-related-recovery", role: "alert" },
+    createElement("div", null, plugin.translator("addRelated.recoverFile", { path: partialFile.path })),
+    partialFailure ? createElement("div", { className: "kplex-add-related-recovery-reason" }, plugin.translator("addRelated.failureReason", { error: partialFailure })) : null,
+    createElement("div", { className: "kplex-add-related-recovery-actions" },
+      createElement("button", { type: "button", disabled: busy || Boolean(savedPending), onClick: /** Recover the existing file relationship rather than creating a duplicate. */ () => submit() }, plugin.translator("addRelated.linkCreatedFile")),
+      createElement("button", { type: "button", disabled: busy, onClick: /** Deliberately inspect the retained file in the supported editor. */ () => { void plugin.openInDocumentLeaf(partialFile); } }, plugin.translator("addRelated.openCreatedFile"))),
   ) : null;
   const controlRow = createElement("div", { className: "kplex-add-related-control-row" }, ontologySearch, editToggle, completionSelect);
   const composeRow = createElement("div", { className: "kplex-add-related-compose-row" }, nameEditor, actionArea);
@@ -514,7 +521,7 @@ function RelatedNoteComposer({
     }
   }
 
-  const status = statusText
+  const status = statusText && !partialFile && !savedPending
     ? createElement("div", { className: `kplex-add-related-create-hint${statusError ? " is-error" : ""}` }, statusText)
     : null;
 

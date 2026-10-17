@@ -35,6 +35,41 @@ function inputFixture() {
     session: { eventsCaptureStatus: "active", events: [{ code: "plugin-start", atMs: 0 }, { code: "index-phase-change", atMs: 350, phase: "indexing" }], droppedEvents: 0, retainedBytes: 109 } };
 }
 
+test("session work counts survive disabled detailed timings without exporting arbitrary fields", /** Only finite nonnegative counts enter the public report. */ () => {
+  const input = inputFixture();
+  input.startup.sessionWork = { sourceInventoryPasses: 2, fullBuildStarts: 1, nodeCatalogStarts: 0,
+    completeSnapshotSaves: 1, checkpointSaves: 0, owner: "private-owner-receipt.md" };
+  const report = payload(createSupportReport(input));
+  assert.equal(report.startup.detailedTelemetry, "disabled");
+  assert.deepEqual(report.startup.sessionWork, { sourceInventoryPasses: 2, fullBuildStarts: 1, nodeCatalogStarts: 0,
+    completeSnapshotSaves: 1, checkpointSaves: 0 });
+  assert(!createSupportReport(input).includes("private-owner-receipt.md"));
+  input.startup.sessionWork.fullBuildStarts = -1;input.startup.sessionWork.completeSnapshotSaves = Infinity;
+  assert.equal(payload(createSupportReport(input)).startup.sessionWork.fullBuildStarts, null);
+  assert.equal(payload(createSupportReport(input)).startup.sessionWork.completeSnapshotSaves, null);
+  delete input.startup.sessionWork;
+  assert.equal(payload(createSupportReport(input)).startup.sessionWork.sourceInventoryPasses, null,
+    "Older/missing evidence is unknown, never a fabricated zero");
+});
+
+test('snapshot attempt attribution survives only through finite allowlisted scalar fields', /** Hostile diagnostic extras and enum values never become shareable vault data. */ () => {
+  const input=inputFixture(),h=input.indexReport.hydration;
+  Object.assign(h,{attempts:2,route:'full-snapshot',firstFailure:{reason:'publication-superseded',phase:'pages',operation:'checkpoint',
+    publicationCause:'file-patch',attempt:1,pages:0,relations:0,evidence:0,expectedPublication:2,actualPublication:3,sourceRevision:0,policyRevision:1,
+    path:'private-note.md',signature:'private-source-signature',error:new Error('private-note-body')}});
+  const first=payload(createSupportReport(input)).index.hydration;
+  assert.equal(first.attempts,2);assert.equal(first.route,'full-snapshot');
+  assert.equal(first.firstFailure.reason,'publication-superseded');assert.equal(first.firstFailure.operation,'checkpoint');
+  assert.equal(first.firstFailure.publicationCause,'file-patch');assert.equal(first.firstFailure.expectedPublication,2);
+  const serialized=JSON.stringify(first);assert(!serialized.includes('private-'));
+  h.firstFailure.reason='private-note.md';h.firstFailure.operation='private-source-signature';h.route='private-note-body';
+  const hostile=JSON.stringify(payload(createSupportReport(input)).index.hydration);
+  assert(!hostile.includes('private-'));
+  let calls=0;
+  Object.defineProperty(h,'firstFailure',{get(){calls++;throw Error('private-body');}});
+  assert.equal(payload(createSupportReport(input)).index.hydration.firstFailure,null);assert.equal(calls,0);
+});
+
 test("support output preserves useful aggregate index and partial startup facts, with explicit unknown evidence", /** Ordinary facts survive the privacy boundary without inventing readiness or telemetry. */ () => {
   const report = payload(createSupportReport(inputFixture()));
   assert.equal(report.formatVersion, 1); assert.equal(report.index.status.indexedFiles, 4); assert.equal(report.index.status.totalFiles, 73);

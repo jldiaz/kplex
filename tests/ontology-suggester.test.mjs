@@ -26,7 +26,7 @@ await build({
         ()=>({path:'obsidian',namespace:'native'}));
       builder.onLoad({filter:/.*/,namespace:'native'},
         /** Supply unused native UI exports plus the editor-owned context required by selection. */
-        ()=>({contents:'export class EditorSuggest {constructor(app){this.app=app;this.context=null}} export class App {} export class Modal {} export class Notice {} export class AbstractInputSuggest {} export class PluginSettingTab {} export class Scope {} export class Setting {} export class ButtonComponent {} export class ExtraButtonComponent {} export class SearchComponent {} export const setIcon=()=>{},setTooltip=()=>{},getIcon=()=>null,getIconIds=()=>[],getLanguage=()=>"en",Platform={};',loader:'js'}));
+        ()=>({contents:'export class EditorSuggest {constructor(app){this.app=app;this.context=null}} export class App {} export class Modal {} export class SuggestModal extends Modal {} export class ColorComponent {} export class Notice {} export class AbstractInputSuggest {} export class PluginSettingTab {} export class Scope {} export class Setting {} export class ButtonComponent {} export class ExtraButtonComponent {} export class SearchComponent {} export const setIcon=()=>{},setTooltip=()=>{},getIcon=()=>null,getIconIds=()=>[],getLanguage=()=>"en",Platform={};',loader:'js'}));
     }
   }]
 });
@@ -203,5 +203,3 @@ test('large native no-trigger prose and overlapping custom literal input finish 
   const result=spawnSync(process.execPath,[probe],{encoding:'utf8',timeout:8000});
   assert.equal(result.error,undefined,result.error?.message);assert.equal(result.status,0,result.stdout+result.stderr);assert.match(result.stdout,/bounded real owner passed/);
 });
-
-

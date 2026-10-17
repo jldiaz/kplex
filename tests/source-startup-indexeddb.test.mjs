@@ -1,13 +1,107 @@
-/** Production restart adoption, finite physical presentation facets and selective source repair through real browser IndexedDB. */
+/** Production restart adoption, source repair and exact resource-observer forwarding through real browser IndexedDB. */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { contributorBrowserBundle, contributorBrowserInitialize } from "./support/contributorBrowserFixture.mjs";
 import { chromiumHarness } from "./support/browserTypeScript.mjs";
 import { hostOracle, collect } from "./support/cachedSourceFixture.mjs";
 import { fullCenterIndex, currentNeighborhoodView, centerGateSettings } from "./support/requestedCenterGateFixture.mjs";
+import { createStartupResourceProbe } from "../scripts/testing/obsidian/startupResources.mjs";
 
 const bundle = await contributorBrowserBundle(["src/index/GraphIndex.ts", "src/index/GraphBuilder.ts", "src/index/IndexSnapshot.ts",
   "src/core/graph/compiler.ts", "src/adapters/obsidian/metadataSourceCollector.ts", "src/adapters/obsidian/ontologySourceCollector.ts"]);
+
+/** A later genuine source pass must wake subscribed status UI after saved hydration has ended. */
+test("source inventory notifies status after complete snapshot hydration without graph publication", async () => {
+  const browser = await chromiumHarness(bundle);
+  try {
+    assert.equal(await browser.evaluate(contributorBrowserInitialize), true);
+    assert.equal(await browser.evaluate(`(/** Restore a real saved graph before a later host validation wave. */ async()=>{
+      const assert=Object.assign(/** Adapt the independent collector oracle's assertion contract. */ (v,m)=>ok(v,m),{equal}),M=sourceModules,f=await fixture('post-hydration-source-progress');let initial,index,release,notifications=0;
+      const hostOracle=${hostOracle.toString()},collect=${collect.toString()},fullCenterIndex=${fullCenterIndex.toString()},centerGateSettings=${centerGateSettings.toString()};
+      try {
+        f.text=f.texts;f.add('A.md','Friends:: [[B]]');f.add('B.md','');f.app.vault.getName=/** Select this fixture's actual existing IndexedDB database. */ ()=> 'post-hydration-source-progress';
+        await f.acquire();ok(await f.acquisition.reconcile(),'Seed real source authority');
+        const semantic={hierarchy:{hidden:[],parents:[],children:[],leftFriends:['Friends'],rightFriends:[],previous:[],next:[]},inferAllLinksAsFriends:false,inverseInfer:false,showFullTagName:true,tagStyleList:[],maxLabelLength:30};
+        initial=await fullCenterIndex(M,f,await hostOracle(f,[...f.files.keys()],semantic,{noteTypeField:'Type',primaryTagField:'Style'},true),semantic,centerGateSettings({showFolderNodes:false}));
+        const settings={...initial.plugin.settings,lastActivePath:'A.md',pinnedNodes:[]};
+        ok(await f.cache.writeSnapshot({createdAt:Date.now(),urlAliasVersion:2,vaultSignature:M.computeVaultSignature(f.app),settingsSignature:M.computeIndexSettingsSignature(settings),discoveredFields:[]},
+          [...initial.state.pages.values()].map(/** Use the production page serializer. */ page=>M.persistedPageFromGraphPage(page)),[...initial.state.evidence.declarations()].map(/** Preserve the canonical declaration multiset. */ item=>M.persistedDeclarationFromEvidence(item))),'Seed genuine complete snapshot');
+        initial.destroy();initial=null;f.acquisition.close();
+        index=new M.GraphIndex({app:f.app,settings,getIndexSourceRevision:/** Keep the host graph epoch unchanged during this source-only wave. */ ()=>0,
+          notifyStartupProgress:/** Observe the real constructor's status notification boundary. */ ()=>{notifications++;}},f.app);
+        index.scheduleOrphanCleanup=/** Keep unrelated delayed orphan maintenance outside this short fixture. */ ()=>{};
+        release=index.acquireSemanticDemand('A.md');ok((await index.restorePersistedSnapshot(['A.md'])).restored,'Actual saved snapshot restores');
+        if(index.hasPendingSnapshotHydration())ok((await index.waitForSnapshotHydration()).restored,'Full hydration completes');
+        equal(index.getSnapshotHydrationDiagnostics().phase,'complete','Source wave follows genuine completed hydration');
+        ok(await index.sourceAcquisition.flush(),'Initial source work drains');
+        const revision=index.publicationRevision;notifications=0;
+        f.app.metadataCache.trigger('resolved');ok(await index.sourceAcquisition.reconcile(),'Later unchanged host wave closes');
+        ok(notifications>0,'Actual inventory progress wakes subscribed status listeners after hydration');
+        equal(index.publicationRevision,revision,'Progress notification does not publish a graph');
+        equal(index.getSourceAcquisitionCounters().vaultReads,0,'No note reread');equal(index.getSourceAcquisitionCounters().parses,0,'No parser work');return true;
+      } finally {release?.();initial?.destroy();index?.destroy();f.close();}
+    })()`), true);
+  } finally { await browser.cleanup(); }
+});
+
+/** Measurement must not create repeated wrappers, substitute native requests/promises or export source payloads. */
+test("startup resource observer is self-contained and preserves native forwarding and cleanup", async () => {
+  const browser=await chromiumHarness(bundle);
+  try {
+    assert.equal(await browser.evaluate(contributorBrowserInitialize),true);
+    assert.equal(await browser.evaluate(`window.sourceResourceFactory=(${createStartupResourceProbe.toString()});true`),true);
+    assert.equal(await browser.evaluate(`(/** Exercise the observer against genuine source/storage operations. */ async()=>{
+      const f=await fixture('resource-observer-contract');let probe,request,promise,receiver;
+      const nativeGet=IDBObjectStore.prototype.get,inspect=f.repository.inspect;
+      /** Witness the actual native request without replacing it. */
+      const getWitness=function(...args){receiver=this;request=nativeGet.apply(this,args);return request;};
+      /** Witness the exact returned repository promise. */
+      const inspectWitness=function(...args){promise=inspect.apply(this,args);return promise;};
+      try {
+        const file=f.add('Observer-private-A.md','Friends:: [[Observer-private-B]]');
+        f.add('Observer-private-B.md','');await f.acquire();ok(await f.acquisition.reconcile(),'Seed real source authority');
+        const originalCache=f.app.metadataCache.getFileCache,originalDaily=f.acquisition.metadataHost.dailyNotesSettings;
+        IDBObjectStore.prototype.get=getWitness;f.repository.inspect=inspectWitness;
+        probe=window.sourceResourceFactory({phase:()=> 'probe',now:()=>performance.now(),cpuProcess:{pid:123,type:'renderer',privateOwner:'never-export-process-extra.md'},databaseName:dbName('resource-observer-contract'),detailed:true});
+        equal(probe.snapshot().cpuProcess,{pid:123,type:'renderer'},'Only the CPU closure process identity is retained');
+        ok(!JSON.stringify(probe.snapshot()).includes('never-export-process-extra.md'),'CPU identity excludes arbitrary properties');
+        probe.attach({sourceAcquisition:f.acquisition,indexedDb:f.cache});
+        f.acquisition.metadataHost.dailyNotesSettings();
+        const db=await f.cache.open(),tx=db.transaction('sourceHeads','readonly'),store=tx.objectStore('sourceHeads');
+        const completed=new Promise(/** Retain the native transaction's terminal event. */ (resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});
+        const returned=store.get(file.path);ok(returned===request&&receiver===store,'Exact native request and receiver preserved');
+        await value(returned);await completed;
+        const observed=f.repository.inspect(file.path,[]);ok(observed===promise,'Exact original repository promise preserved');
+        equal((await observed).reason,'ready','Genuine selected head remains valid');
+        f.acquisition.metadataHost.dailyNotesSettings();
+        equal(probe.snapshot().groups['probe:host.dailyNotesSettings'].calls,2,'Host wrapper installed once despite multiple IDB requests');
+        ok(await f.acquisition.readBody(file),'Actual bounded family decoder remains usable');
+        const snapshot=probe.snapshot();equal(snapshot.activeTransactions,0,'Native transactions drained');equal(snapshot.pending,0,'Observed promises drained');
+        ok(snapshot.decodePeak>0&&snapshot.decodeCurrent===0,'Decode reservations released');
+        ok(!JSON.stringify(snapshot).includes('Observer-private-'),'Only aggregate diagnostics exported');
+        probe.stop();
+        ok(IDBObjectStore.prototype.get===getWitness&&f.repository.inspect===inspectWitness,'Exact wrapped methods restored');
+        ok(f.app.metadataCache.getFileCache===originalCache&&f.acquisition.metadataHost.dailyNotesSettings===originalDaily,'Exact host methods restored');
+        const digest=f.repository.runtime.digest;let digestPromise,digestReceiver;
+        const digestWitness=function(...args){digestReceiver=this;digestPromise=digest.apply(this,args);return digestPromise;};
+        f.repository.runtime.digest=digestWitness;
+        try{
+          probe=window.sourceResourceFactory({phase:()=> 'counts',now:()=>performance.now(),databaseName:dbName('resource-observer-contract'),detailed:false});
+          probe.attach({sourceAcquisition:f.acquisition,indexedDb:f.cache});
+          const text='[1,"snapshot-pages","test",""]',result=f.repository.runtime.digest(text);
+          ok(result===digestPromise&&digestReceiver===f.repository.runtime,'Counts preserve original digest promise and receiver');await result;
+          await f.repository.runtime.digest('Observer-private-raw-input');
+          const counted=probe.snapshot();equal(counted.hashing['snapshot-pages'],{calls:1,utf16Units:text.length},'Receipt payload hash work is counted without encoding a copy');
+          equal(counted.hashing.source.calls,1,'Source hashes remain separately counted');
+          ok(!JSON.stringify(counted).includes('Observer-private-'),'Hash payload text is never retained or exported');
+          counted.hashing.source.calls=999;equal(probe.snapshot().hashing.source.calls,1,'Caller cannot mutate private counters');
+          probe.stop();ok(f.repository.runtime.digest===digestWitness,'Exact digest method restored');
+        }finally{probe?.stop();f.repository.runtime.digest=digest;}
+        return true;
+      } finally {probe?.stop();IDBObjectStore.prototype.get=nativeGet;f.repository.inspect=inspect;f.close();}
+    })()`),true);
+  } finally {await browser.cleanup();}
+});
 
 /** An exception after complete navigation must retain that owner until existing neutral recovery finishes. */
 test("trusted warm evidence exception retains navigable graph for source recovery", async () => {
@@ -339,12 +433,14 @@ for (const { cancel, retry } of [{ cancel: false, retry: false }, { cancel: true
   });
 }
 
+/** An unchanged resolver wave authenticates each resolution family once; changed targets still use canonical repair. */
 test("restart resolver waves retain identical heads and automatically update genuinely changed bindings", async () => {
   const browser = await chromiumHarness(bundle);
   try {
     assert.equal(await browser.evaluate(contributorBrowserInitialize), true);
     assert.equal(await browser.evaluate(`(async()=>{
-      const M=sourceModules,f=await fixture('si5-restart-resolver-wave');let restarted;
+      const M=sourceModules,f=await fixture('si5-restart-resolver-wave');let restarted,resolutionVisits=0;
+      const visitFamily=f.repository.visitFamily;
       const wait=async predicate=>{const start=Date.now();while(Date.now()-start<15000){if(predicate())return;await new Promise(r=>setTimeout(r,20))}throw Error('Resolver adoption did not converge')};
       try{
         f.add('A.md','Friends:: [[Alias]]');f.add('B.md','');f.add('C.md','');
@@ -352,12 +448,14 @@ test("restart resolver waves retain identical heads and automatically update gen
         await f.acquire();ok(await f.acquisition.reconcile(),'Initial source authority');
         const db=await f.cache.open(),heads=await value(db.transaction('sourceHeads').objectStore('sourceHeads').getAll());
         f.acquisition.close();f.work.reset();f.reads.length=0;f.parses.length=0;
+        f.repository.visitFamily=/** Count actual family authentication while forwarding the original promise. */ function(view,family,...args){if(family==='resolution')resolutionVisits++;return visitFamily.call(this,view,family,...args);};
         restarted=new M.ObsidianSourceAcquisition(f.app,f.cache,async text=>{f.parses.push(text);return M.parseBodyMetadata(text)});
         restarted.start();f.app.metadataCache.trigger('resolved');ok(!restarted.hasSemanticDependencies(),'Uncertain startup event closes readiness');
         restarted.enableInventory();await wait(()=>restarted.hasSemanticDependencies()&&!restarted.inventory);
         equal(await value(db.transaction('sourceHeads').objectStore('sourceHeads').getAll()),heads,'Identical current resolutions retain exact prior heads');
         equal(f.work.writes,[],'No source restamping for resolver close');equal(f.reads,[],'No Markdown reads');equal(f.parses,[],'No parsing');
         equal(restarted.getCounters().resolutionRefreshes,0,'No resolution persistence for equal output');
+        equal(resolutionVisits,f.files.size,'Each unchanged resolution family is authenticated once, without an earlier duplicate validation');
         const transaction=f.repository.transaction,modes=[];f.repository.transaction=function(db,stores,mode,...args){modes.push({stores,mode});return transaction.call(this,db,stores,mode,...args)};
         let inspected;try{inspected=await f.repository.inspect('A.md',[])}finally{f.repository.transaction=transaction}
         equal(modes,[{stores:['sourceHeads'],mode:'readonly'}],'Head-only inspection never writes cleanup leases');
@@ -372,7 +470,7 @@ test("restart resolver waves retain identical heads and automatically update gen
         equal(facts.filter(r=>r.kind==='reference-resolution').map(r=>r.target?.entity.id),['C.md'],'Canonical new target');
         equal(f.work.writes,['replace:A.md'],'Only changed resolution replaced');equal(f.reads,[],'Cached binding change reads no Markdown');equal(f.parses,[],'Cached binding change parses nothing');
         return true;
-      }finally{restarted?.close();f.close()}
+      }finally{f.repository.visitFamily=visitFamily;restarted?.close();f.close()}
     })()`), true);
   } finally { await browser.cleanup(); }
 });
@@ -429,6 +527,70 @@ test("decoded body validation is reused only while the exact selected head is un
     })()`), true);
   } finally { await browser.cleanup(); }
 });
+
+/** Deferred equality must still authenticate payloads and reject changed source/head lifetimes. */
+for(const mode of ['corrupt','foreground-proof','replacement','cancelled','same-stat']){
+  test(`resolver comparison retains source integrity and finality: ${mode}`,async()=>{
+    const browser=await chromiumHarness(bundle);
+    try{
+      assert.equal(await browser.evaluate(contributorBrowserInitialize),true);
+      assert.equal(await browser.evaluate(`(/** Exercise actual acquisition and selected-family validation. */ async()=>{
+        const M=sourceModules,f=await fixture('resolver-proof-${mode}'),mode=${JSON.stringify(mode)};let owner,peer,current=true,injected=false;
+        const inspect=f.repository.inspect,selections=[];
+        try{
+          const file=f.add('A.md','Friends:: [[B]]');f.add('B.md','');await f.acquire();ok(await f.acquisition.reconcile(),'Seed genuine source authority');
+          const before=await f.repository.inspect(file.path),db=await f.cache.open();f.acquisition.close();
+          owner=new M.ObsidianSourceAcquisition(f.app,f.cache,async text=>{f.parses.push(text);return M.parseBodyMetadata(text)});
+          owner.start();f.app.metadataCache.trigger('resolved');
+          const body=await owner.readBody(file);ok(body,'Selected body families authenticated');
+          /** Damage the selected resolution posting without changing body families. */
+          const corrupt=async()=>edit(db,['sourcePostings'],tx=>tx.objectStore('sourcePostings').delete([file.path,before.head.families.resolution.revision,'resolution',0]));
+          let externalHead;
+          if(mode==='corrupt')await corrupt();
+          if(mode==='replacement'){
+            peer=new M.KplexIndexedDbCache('resolver-proof-'+mode);ok(await peer.open(),'Independent connection');
+            equal((await peer.sources.replace({sourceId:file.path,physical:before.head.physical,observation:before.head.observation,expected:before.expected,families:before.head.families})).outcome,'activated','Concurrent selected-head replacement');
+            externalHead=(await peer.sources.inspect(file.path,[])).head;
+          }
+          f.repository.inspect=/** Preserve the original inspection and inject only at its return boundary. */ async function(id,families,...args){
+            selections.push([...families]);const selected=await inspect.call(this,id,families,...args);
+            if(id===file.path&&families.includes('metadata')&&!injected){
+              if(mode==='cancelled'){injected=true;current=false;}
+              else if(mode==='same-stat'){injected=true;f.app.vault.trigger('modify',file);}
+              else if(mode==='foreground-proof'&&families.length===1){
+                injected=true;
+                const foreground=await owner.readBody(file);ok(foreground,'Genuine concurrent foreground body selection');
+                ok((await owner.acquire(file,foreground)).saved,'Actual foreground equality proves this host observation');
+                await corrupt();
+              }
+            }
+            return selected;
+          };
+          const acquired=await owner.acquire(file,body,()=>current);f.repository.inspect=inspect;
+          if(mode==='cancelled'||mode==='same-stat'){
+            equal(acquired.current,false,'Retired source cannot publish from the selected body');
+            if(mode==='same-stat')ok(owner.needsBodyRead(file),'Equal-stat source event retains real reacquisition');
+            else equal((await f.repository.inspect(file.path,[])).sequence,before.sequence,'Cancellation preserves old head');
+          }else{
+            ok(acquired.current&&acquired.saved,'Current source converges through real validation/repair');
+            const after=await f.repository.inspect(file.path),facts=[];
+            equal(after.reason,'ready','Every final family validates');
+            equal(await f.repository.visit(file.path,'resolution',rows=>{facts.push(...rows);return true}),'ready','Resolution postings authenticated');
+            equal(facts.filter(row=>row.kind==='reference-resolution').map(row=>row.target?.entity.id),['B.md'],'Canonical binding retained');
+            if(mode==='corrupt'||mode==='foreground-proof'&&injected)ok(after.sequence>before.sequence,'Missing posting repaired rather than falsely accepted');
+            if(mode==='replacement'){
+              ok(selections.some(families=>JSON.stringify(families)===JSON.stringify(M.SOURCE_FAMILIES)),'Changed selection requires all-family validation');
+              equal(after.head,externalHead,'Concurrent selected head cannot be overwritten by stale body proof');
+            }
+            equal(f.repository.decodeBytes,0,'Transient decode budget released');
+          }
+          equal(f.reads.length,0,'Cached proof never reads Markdown');equal(f.parses.length,0,'Cached proof never reparses');
+          return true;
+        }finally{f.repository.inspect=inspect;owner?.close();peer?.close();f.close();}
+      })()`),true);
+    }finally{await browser.cleanup();}
+  });
+}
 
 test("restart after ontology changes reuses the old graph only as a source-backed baseline", async () => {
   const browser = await chromiumHarness(bundle);

@@ -203,7 +203,21 @@ test("File Explorer drag adapter accepts one current Markdown file and rejects u
   assert.equal(fileExplorerDrag.getDraggedFile(app), canvas, "Canvas files are navigation targets");
 
   app.dragManager.draggable = { type: "link", file: note };
-  assert.equal(fileExplorerDrag.getDraggedMarkdownFile(app), null, "editor/internal link drags are outside the File Explorer scope");
+  assert.equal(fileExplorerDrag.getDraggedMarkdownFile(app), null, "a file attached to an incomplete link payload is not a native resolved link");
+
+  app.dragManager.draggable = { type: "link", file: note, linktext: note.path, sourcePath: "" };
+  assert.equal(fileExplorerDrag.getDraggedFile(app), note, "actual Bases link shape uses the same canonical file route");
+  app.dragManager.draggable = { type: "link", file: image, linktext: "diagram.png", sourcePath: "Assets/Index.md" };
+  assert.equal(fileExplorerDrag.getDraggedFile(app), image, "resolved note/attachment links preserve host-relative resolution");
+  for (const payload of [
+    { type: "link", file: null, linktext: "Missing", sourcePath: "" },
+    { type: "link", linktext: "https://example.com", sourcePath: "" },
+    { type: "link", file: note, linktext: "", sourcePath: "" },
+    { type: "link", file: note, linktext: note.path },
+  ]) {
+    app.dragManager.draggable = payload;
+    assert.equal(fileExplorerDrag.getDraggedFile(app), null, "unresolved, external and incomplete link drags stay inert");
+  }
 
   app.dragManager.draggable = { type: "file", file: { path: note.path } };
   assert.equal(fileExplorerDrag.getDraggedMarkdownFile(app), note, "the adapter should resolve the current Vault file by path");
@@ -497,7 +511,7 @@ test("URL expansion normalizes videos, preserves private Vimeo tokens and reject
 function compileGraphPresentation() {
   const temp = mkdtempSync(join(tmpdir(), "kplex-graph-presentation-"));
   for (const relative of ["src/index/GraphPresentation.ts", "src/adapters/obsidian/yieldToHostTask.ts",
-    "src/core/contracts/fieldName.ts", "src/core/graph/presentation.ts", "src/core/graph/settings.ts", "src/core/graph/settingsPolicy.ts"]) {
+    "src/core/contracts/appearance.ts", "src/core/contracts/colorValue.ts", "src/core/contracts/fieldName.ts", "src/core/graph/presentation.ts", "src/core/graph/settings.ts", "src/core/graph/settingsPolicy.ts"]) {
     const output = join(temp, relative.replace(/\.ts$/, ".js"));
     mkdirSync(dirname(output), { recursive: true });
     writeFileSync(output, ts.transpileModule(readFileSync(join(root, relative), "utf8"), {

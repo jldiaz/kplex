@@ -443,6 +443,7 @@ function appFollowFixture() {
   state.handover = production("acknowledgeDocumentDemandHandover",dependencies,"src/ui/App.tsx");
   state.observe = production("observeDocumentFollow", {...dependencies, activatePendingDocumentFollow: state.flush}, "src/ui/App.tsx");
   state.presentation = production("presentationPublication", {...dependencies, activatePendingDocumentFollow: state.flush,
+    forcePaint: () => { state.paintRenders = (state.paintRenders ?? 0) + 1; },
     forceRender: /** Observe the actual render-only publication after pending settlement. */ () => { state.presentationRenders = (state.presentationRenders ?? 0) + 1; }}, "src/ui/App.tsx");
   state.reconcile = production("reconcileDocumentFollowVisibility", {...dependencies, activatePendingDocumentFollow: state.flush, observeDocumentFollow: state.observe,
     forceRender: /** Count visible geometry catch-up without synthesizing a plugin visibility notification. */ () => { state.visibilityRenders = (state.visibilityRenders ?? 0) + 1; }}, "src/ui/App.tsx");
@@ -489,7 +490,7 @@ test("App-to-graph handover preserves preview-backed pages without a zero-demand
 test("presentation-only native preview publication settles a missing follow before graph handover", /** Host previews and on-demand local scopes publish without a semantic event. */ () => {
   const {state,files,pages}=appFollowFixture(),page=pages.get("B.md");pages.delete("B.md");state.observe(files.get("B.md"));
   assert.equal(state.pendingDocumentFollowRef.current,files.get("B.md"));assert.equal(state.activates.length,0);
-  pages.set("B.md",page);state.presentation();
+  pages.set("B.md",page);state.presentation({kind:"presentation"});
   assert.equal(state.pendingDocumentFollowRef.current,null);assert.deepEqual(state.activates,[["B.md",true,true,"follow"]]);
   assert.equal(state.plugin.settings.lastActivePath,"B.md");assert.equal(state.presentationRenders,1);assert.equal(state.demandCounts.get("B.md"),1);
   const releaseGraph=state.plugin.index.acquireSemanticDemand("B.md");state.handover("B.md");releaseGraph();
@@ -498,7 +499,7 @@ test("presentation-only native preview publication settles a missing follow befo
 
 test("presentation catch-up reconciles a hidden native file when reveal geometry precedes its visibility notification", /** React's old path must not remain empty merely because refs advanced while the drawer was hidden. */ () => {
   const {state,files}=appFollowFixture();state.visible=false;state.observe(files.get("B.md"));assert.equal(state.renderPath,"A.md");
-  state.visible=true;state.presentation();assert.equal(state.renderPath,"B.md");assert.equal(state.pendingDocumentFollowRef.current,null);
+  state.visible=true;state.presentation({kind:"presentation"});assert.equal(state.renderPath,"B.md");assert.equal(state.pendingDocumentFollowRef.current,null);
   assert.deepEqual(state.activates,[["B.md",true,true,"follow"]]);
 });
 
@@ -535,7 +536,7 @@ test("an already-readable borrowed target obtains its own demand before the prev
   assert.equal(state.demandCounts.get("B.md"),2,"the App lease remains until this graph's exact native center is readable");
   assert.equal(production("waitingForDocument",{pendingDocumentFollowRef:state.pendingDocumentFollowRef,navigationOrigin:state.origin,
     activeFileRef:state.activeFileRef,plugin:state.plugin},"src/ui/App.tsx"),true,"a settled follow cannot fall back to unrelated history during preview handover");
-  state.borrowedFrom.delete("B.md");state.presentation();assert.equal(state.plugin.index.get("B.md"),page);
+  state.borrowedFrom.delete("B.md");state.presentation({kind:"presentation"});assert.equal(state.plugin.index.get("B.md"),page);
   state.handover("B.md");assert.equal(state.demandCounts.get("B.md"),1);
   releaseGraph();assert.equal(state.plugin.index.get("B.md"),undefined);
 });
@@ -543,7 +544,7 @@ test("an already-readable borrowed target obtains its own demand before the prev
 test("a synchronous preview publication and graph acknowledgment during acquisition retire only the temporary App lease", /** Acquisition may reenter settlement before returning its cleanup capability. */ () => {
   const {state,files,pages}=appFollowFixture(),page=pages.get("B.md");pages.delete("B.md");let releaseGraph;
   state.onAcquire=/** Publish exactly once during the temporary acquisition, then model the child's independent owner. */ path=>{
-    state.onAcquire=null;pages.set(path,page);state.presentation();
+    state.onAcquire=null;pages.set(path,page);state.presentation({kind:"presentation"});
     releaseGraph=state.plugin.index.acquireSemanticDemand(path);state.handover(path);
   };
   state.observe(files.get("B.md"));assert.equal(state.pendingDocumentFollowRef.current,null);assert.equal(state.pendingDocumentDemandRef.current,null);
@@ -626,4 +627,10 @@ test("stationary central double taps open in the main tab on a sidepanel and con
   assert.equal(available({page: noncentral}), false); assert.equal(available({page: ghost}), false);
   open({page: ghost, target: {kind: "node"}}); open({page: noncentral, target: {kind: "node"}});
   assert.deepEqual(opened.slice(1), [["ghost", ghost], ["sidecar", noncentral]]);
+});
+
+test('color publication never promotes a pending native follow or expands its demand',()=>{
+ const {state,files}=appFollowFixture();state.visible=false;state.observe(files.get('B.md'));const demands=[...state.demands],rendered=state.renderPath;
+ state.visible=true;state.presentation({kind:'paint'});assert.equal(state.renderPath,rendered);assert.deepEqual(state.demands,demands);assert.equal(state.paintRenders,1);assert.equal(state.presentationRenders,undefined);
+ state.visible=false;state.presentation({kind:'paint'});assert.equal(state.paintRenders,1);state.releaseDemand();
 });

@@ -122,9 +122,16 @@ try {
         if(p.index.hasPendingStructuralMaintenance())await p.index.waitForStructuralMaintenance();
       };
       await joinOwners();
-      // The ordinary patch requires indexed identities. Bind only absent owned notes; never scan
-      // or force a full vault build. Partial commits stay accepted when a real event supersedes work.
-      for(const path of ownedMarkdown)if(!p.index.get(path))p.index.insertCreatedFile(app.vault.getFileByPath(path));
+      // get() may return a prepared foreground page outside the canonical patch baseline. The
+      // existing insertion owner is idempotent and binds that exact TFile in either case.
+      c.fixtureBindings=[];
+      for(const path of ownedMarkdown){
+        const file=app.vault.getFileByPath(path),canonicalBefore=p.index.state.pages.has(path),readableBefore=Boolean(p.index.get(path));
+        p.index.insertCreatedFile(file);
+        const canonicalAfter=p.index.state.pages.get(path)?.file===file;
+        c.fixtureBindings.push({path,canonicalBefore,readableBefore,canonicalAfter});
+        c.check(canonicalAfter,"Owned fixture has no canonical patch identity: "+path);
+      }
       c.setupAttempts=[];let pending=[...ownedMarkdown],committed=0;const setupDeadline=Date.now()+180000;
       while(pending.length){
         c.check(Date.now()<setupDeadline&&c.setupAttempts.length<16,"Owned setup patch did not reach a current final publication");
@@ -212,7 +219,7 @@ try {
     return JSON.stringify(true);
   })()`);
   installed = true;
-  const result = await poll(`JSON.stringify((()=>{const c=window.${controller};return c?.done?{error:c.error,scenarios:c.scenarios,oracle:c.oracle,setupPatch:c.setupPatch,setupAttempts:c.setupAttempts,navigationSetup:c.navigationSetup,lastSnapshot:c.snapshot(),fixtureChecks:c.fixtureChecks,fixtureFiles:c.fixtureFiles,createdFiles:c.files,folder:c.folder}:false})())`, "Native gate probe did not complete", 600_000);
+  const result = await poll(`JSON.stringify((()=>{const c=window.${controller};return c?.done?{error:c.error,scenarios:c.scenarios,oracle:c.oracle,setupPatch:c.setupPatch,setupAttempts:c.setupAttempts,fixtureBindings:c.fixtureBindings,navigationSetup:c.navigationSetup,lastSnapshot:c.snapshot(),fixtureChecks:c.fixtureChecks,fixtureFiles:c.fixtureFiles,createdFiles:c.files,folder:c.folder}:false})())`, "Native gate probe did not complete", 600_000);
   Object.assign(report, result); assert(!result.error, result.error); report.status = "passed";
 } catch (error) { report.status = "failed"; report.error = String(error.stack || error); }
 finally {

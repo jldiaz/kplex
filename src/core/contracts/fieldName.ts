@@ -1,4 +1,9 @@
-/** Canonical property-key normalization shared by parser, collectors and graph semantics. */
+/**
+ * Canonical property normalization and configured ontology mapping grammar shared by selection,
+ * editing and presentation. Six reciprocal groups support forward/inverse pairs; directional
+ * Hidden and exclusions remain literal. These pure helpers never acquire sources or write notes.
+ */
+/** Normalize a physical field for matching while retaining display spelling in its separate value. */
 export const normalizeFieldName = (name: string): string => name.toLowerCase().replace(/\s+/g, "-").trim();
 
 /**
@@ -19,23 +24,25 @@ export type HierarchyFieldMapping = Readonly<{
  * Escaped slashes (e.g. "a\/b") or multiple/consecutive slashes (e.g. "a//b", "a/b/c") are treated as literal single entries.
  *
  * @param entry The configured field string from hierarchy settings.
+ * @param allowInverse False for directional Hidden/exclusions, whose names stay literal.
  * @returns The parsed mapping with forward and optional inverse fields.
  */
-export function parseHierarchyFieldMapping(entry: string): HierarchyFieldMapping {
+export function parseHierarchyFieldMapping(entry: string, allowInverse = true): HierarchyFieldMapping {
   const trimmed = entry.trim();
+  if (!allowInverse) return {raw: entry, forward: entry, normalizedForward: normalizeFieldName(entry)};
   if (trimmed.includes("\\/")) {
     const unescaped = trimmed.replace(/\\\//g, "/");
     return {
-      raw: trimmed,
+      raw: entry,
       forward: unescaped,
       normalizedForward: normalizeFieldName(unescaped),
     };
   }
   if (trimmed.includes("//") || !trimmed.includes("/")) {
     return {
-      raw: trimmed,
-      forward: trimmed,
-      normalizedForward: normalizeFieldName(trimmed),
+      raw: entry,
+      forward: entry,
+      normalizedForward: normalizeFieldName(entry),
     };
   }
   const parts = trimmed.split("/");
@@ -43,7 +50,7 @@ export function parseHierarchyFieldMapping(entry: string): HierarchyFieldMapping
     const forward = parts[0].trim();
     const inverse = parts[1].trim();
     return {
-      raw: trimmed,
+      raw: entry,
       forward,
       normalizedForward: normalizeFieldName(forward),
       inverse,
@@ -51,9 +58,9 @@ export function parseHierarchyFieldMapping(entry: string): HierarchyFieldMapping
     };
   }
   return {
-    raw: trimmed,
-    forward: trimmed,
-    normalizedForward: normalizeFieldName(trimmed),
+    raw: entry,
+    forward: entry,
+    normalizedForward: normalizeFieldName(entry),
   };
 }
 
@@ -100,7 +107,7 @@ export function ontologyFieldsForHierarchyRole(hierarchy: RoleHierarchyData, rol
 
   for (const entry of directList ?? []) {
     const mapping = parseHierarchyFieldMapping(entry);
-    if (!seen.has(mapping.normalizedForward)) {
+    if (mapping.normalizedForward && !seen.has(mapping.normalizedForward)) {
       seen.add(mapping.normalizedForward);
       result.push(mapping.forward);
     }
@@ -138,16 +145,18 @@ export type MutableHierarchyData = {
   exclusions?: string[];
 };
 
-function normalizeTargetRole(role: string): OntologyFieldRole {
+/** Accept the existing plural setting-group aliases at this settings-edit boundary. */
+function normalizeTargetRole(role: OntologyFieldRole | "parents" | "children" | "leftFriends" | "rightFriends"): OntologyFieldRole {
   switch (role) {
     case "parents": return "parent";
     case "children": return "child";
     case "leftFriends": return "left";
     case "rightFriends": return "right";
-    default: return role as OntologyFieldRole;
+    default: return role;
   }
 }
 
+/** Return the owned mutable role list, initializing only missing compatibility fields. */
 function getRoleList(hierarchy: MutableHierarchyData, role: OntologyFieldRole): string[] {
   switch (role) {
     case "parent": return (hierarchy.parents ??= []);
@@ -161,6 +170,7 @@ function getRoleList(hierarchy: MutableHierarchyData, role: OntologyFieldRole): 
   }
 }
 
+/** Preserve symmetric lateral roles and invert only hierarchical/chronological endpoints. */
 function reciprocalRoleForGroup(role: OntologyFieldRole): OntologyFieldRole {
   switch (role) {
     case "parent": return "child";
@@ -181,98 +191,51 @@ function reciprocalRoleForGroup(role: OntologyFieldRole): OntologyFieldRole {
  * @param hierarchy The mutable hierarchy settings data.
  * @param field The field or slash pair being assigned.
  * @param targetRole The destination ontology role.
+ * @param options Literal mode accepts an actual physical property name, never configured pair syntax.
  */
 export function reassignFieldInHierarchy(
   hierarchy: MutableHierarchyData,
   field: string,
   targetRole: OntologyFieldRole | "parents" | "children" | "leftFriends" | "rightFriends",
+  options: Readonly<{literal?: boolean}> = {},
 ): MutableHierarchyData {
   const trimmed = field.trim();
   if (!trimmed) return hierarchy;
-  const normalized = normalizeFieldName(trimmed);
-  const inputMapping = parseHierarchyFieldMapping(trimmed);
   const destinationRole = normalizeTargetRole(targetRole);
-
-  hierarchy.hidden ??= [];
-  hierarchy.parents ??= [];
-  hierarchy.children ??= [];
-  hierarchy.leftFriends ??= [];
-  hierarchy.rightFriends ??= [];
-  hierarchy.previous ??= [];
-  hierarchy.next ??= [];
-
-  const roleLists: Array<{ role: OntologyFieldRole; list: string[] }> = [
-    { role: "hidden", list: hierarchy.hidden },
-    { role: "parent", list: hierarchy.parents },
-    { role: "child", list: hierarchy.children },
-    { role: "left", list: hierarchy.leftFriends },
-    { role: "right", list: hierarchy.rightFriends },
-    { role: "previous", list: hierarchy.previous },
-    { role: "next", list: hierarchy.next },
-    { role: "excluded", list: hierarchy.exclusions ?? [] },
-  ];
-
-  // If reassigning an entire slash pair:
-  if (inputMapping.inverse) {
-    for (const group of roleLists) {
-      const filtered = group.list.filter((entry) => {
-        const m = parseHierarchyFieldMapping(entry);
-        return m.normalizedForward !== inputMapping.normalizedForward &&
-               m.normalizedForward !== inputMapping.normalizedInverse &&
-               m.normalizedInverse !== inputMapping.normalizedForward &&
-               m.normalizedInverse !== inputMapping.normalizedInverse;
-      });
-      group.list.length = 0;
-      group.list.push(...filtered);
+  const roles: OntologyFieldRole[] = ["hidden", "parent", "child", "left", "right", "previous", "next", "excluded"];
+  const reciprocal = destinationRole !== "hidden" && destinationRole !== "excluded";
+  const inputMapping = options.literal
+    ? {raw: trimmed, forward: trimmed, normalizedForward: normalizeFieldName(trimmed), inverse: undefined, normalizedInverse: undefined}
+    : parseHierarchyFieldMapping(trimmed, reciprocal);
+  // Physical writers pass literal mode explicitly. Adding one escape before every slash also
+  // preserves a literal backslash-slash: parsing removes only the newly added escape character.
+  const targetEntry = options.literal && reciprocal ? trimmed.replaceAll("/", "\\/") : trimmed;
+  const selected = new Set([inputMapping.normalizedForward, inputMapping.normalizedInverse].filter(
+    /** Empty inverse tokens cannot select unrelated settings entries. */ (name): name is string => !!name));
+  const preserved: Array<{role: OntologyFieldRole; entry: string}> = [];
+  for (const role of roles) {
+    const list = getRoleList(hierarchy, role), kept: string[] = [];
+    for (const entry of list) {
+      const mapping = parseHierarchyFieldMapping(entry, role !== "hidden" && role !== "excluded");
+      const forwardSelected = selected.has(mapping.normalizedForward);
+      const inverseSelected = !!mapping.normalizedInverse && selected.has(mapping.normalizedInverse);
+      if (!forwardSelected && !inverseSelected) { kept.push(entry); continue; }
+      // Splitting a pair retires only selected fields. Preserve every unrelated half under the
+      // role it already meant, even when the new pair intersects two different existing pairs.
+      if (!forwardSelected) preserved.push({role, entry: mapping.forward});
+      if (mapping.inverse && !inverseSelected) preserved.push({role: reciprocalRoleForGroup(role), entry: mapping.inverse});
     }
-    const target = getRoleList(hierarchy, destinationRole);
-    target.push(trimmed);
-    target.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-    return hierarchy;
+    list.splice(0, list.length, ...kept);
   }
-
-  // The user is reassigning a single field:
-  const retainedPreservations: Array<{ targetRole: OntologyFieldRole; entry: string }> = [];
-
-  for (const group of roleLists) {
-    const updated: string[] = [];
-    for (const entry of group.list) {
-      const m = parseHierarchyFieldMapping(entry);
-      if (m.inverse) {
-        if (m.normalizedForward === normalized) {
-          const reciprocal = reciprocalRoleForGroup(group.role);
-          retainedPreservations.push({ targetRole: reciprocal, entry: m.inverse });
-          continue;
-        } else if (m.normalizedInverse === normalized) {
-          updated.push(m.forward);
-          continue;
-        }
-      } else if (m.normalizedForward === normalized) {
-        continue;
-      }
-      updated.push(entry);
-    }
-    group.list.length = 0;
-    group.list.push(...updated);
+  for (const {role, entry} of preserved) {
+    const normalized = normalizeFieldName(entry);
+    const present = role === "hidden" || role === "excluded"
+      ? getRoleList(hierarchy, role).some(/** Directional groups compare literal physical names. */ value => normalizeFieldName(value) === normalized)
+      : ontologyFieldsForHierarchyRole(hierarchy, role).some(/** Existing effective assignments need no duplicate singleton. */ value => normalizeFieldName(value) === normalized);
+    if (!present) getRoleList(hierarchy, role).push(entry);
   }
-
-  for (const { targetRole: r, entry } of retainedPreservations) {
-    const list = getRoleList(hierarchy, r);
-    const norm = normalizeFieldName(entry);
-    if (!list.some((existing) => {
-      const m = parseHierarchyFieldMapping(existing);
-      return m.normalizedForward === norm || m.normalizedInverse === norm;
-    })) {
-      list.push(entry);
-      list.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-    }
-  }
-
-  const target = getRoleList(hierarchy, destinationRole);
-  target.push(trimmed);
-  target.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  getRoleList(hierarchy, destinationRole).push(targetEntry);
+  for (const role of roles) getRoleList(hierarchy, role).sort(/** Retain the established case-insensitive settings ordering. */
+    (a, b) => a.localeCompare(b, undefined, {sensitivity: "base"}));
   return hierarchy;
 }
-
-
-

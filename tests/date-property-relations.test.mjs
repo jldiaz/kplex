@@ -11,7 +11,7 @@ import {loadPortableModules} from './support/portableTypeScript.mjs';
 const {exports:c}=loadPortableModules(['src/core/graph/compiler.ts','src/core/graph/patch.ts','src/core/graph/source.ts','src/core/graph/sourcePolicy.ts','src/core/graph/settingsPolicy.ts','src/core/graph/relations.ts','src/core/graph/resolver.ts','src/core/graph/evidence.ts']);
 const temp=mkdtempSync(join(tmpdir(),'kplex-date-policy-'));process.once('exit',()=>rmSync(temp,{recursive:true,force:true}));
 const entry=join(temp,'host.mjs');
-await build({stdin:{resolveDir:process.cwd(),contents:'export {DEFAULT_SETTINGS,migrateAndMergeSettings,importExcaliBrainGraphSettings} from "./src/settings";export {createTranslator} from "./src/lang";export {graphCompilerSettingsFromLegacy,semanticIndexSettingsFromLegacy} from "./src/adapters/obsidian/graphContracts";',loader:'ts'},outfile:entry,bundle:true,platform:'node',format:'esm',plugins:[{name:'settings-host-boundary',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'native'}));b.onLoad({filter:/.*/,namespace:'native'},()=>({contents:'export class App {} export class ButtonComponent {} export class Modal {} export class Notice {} export class AbstractInputSuggest {} export class Setting {} export class ExtraButtonComponent {} export class Scope {} export class SearchComponent {} export class PluginSettingTab {} export const getIcon=()=>null,getIconIds=()=>[],setIcon=()=>{},setTooltip=()=>{},getLanguage=()=>"en",Platform={};',loader:'js'}));}}]});
+await build({stdin:{resolveDir:process.cwd(),contents:'export {DEFAULT_SETTINGS,migrateAndMergeSettings,importExcaliBrainGraphSettings} from "./src/settings";export {createTranslator} from "./src/lang";export {graphCompilerSettingsFromLegacy,semanticIndexSettingsFromLegacy} from "./src/adapters/obsidian/graphContracts";',loader:'ts'},outfile:entry,bundle:true,platform:'node',format:'esm',plugins:[{name:'settings-host-boundary',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'native'}));b.onLoad({filter:/.*/,namespace:'native'},()=>({contents:'export class App {} export class ButtonComponent {} export class Modal {} export class SuggestModal extends Modal {} export class ColorComponent {} export class Notice {} export class AbstractInputSuggest {} export class Setting {} export class ExtraButtonComponent {} export class Scope {} export class SearchComponent {} export class PluginSettingTab {} export const getIcon=()=>null,getIconIds=()=>[],setIcon=()=>{},setTooltip=()=>{},getLanguage=()=>"en",Platform={};',loader:'js'}));}}]});
 const host=await import(pathToFileURL(entry).href);
 const empty=()=>({hidden:[],parents:[],children:[],leftFriends:[],rightFriends:[],previous:[],next:[],exclusions:[]});
 const settings=(roles={},extra={})=>({hierarchy:{...empty(),...roles},inferAllLinksAsFriends:false,inverseInfer:false,showFullTagName:true,tagStyleList:[],maxLabelLength:30,...extra});
@@ -77,6 +77,16 @@ test('all configured roles, hidden and normalized exact-label duplicates retain 
     const patch=new c.NormalizedSourcePatchPreparer(meeting.id,policy,runtime(),{entity:ref=>[meeting,daily].some(item=>item.id===ref.id)?entity(ref):undefined});
     await feed(patch,records.filter(item=>item.kind==='date-property'));const result=await patch.finish();assert.equal(result.outcome,'prepared');assert.deepEqual(declarations(result.patch.compilation),owned);
   }
+});
+
+test('paired Date fields preserve reciprocal labels through full and patch compilation without changing scalar provenance',async()=>{
+ const policy=settings({parents:['Started/Start of']},{datePropertyRelations:'left'}),records=[entity(meeting),entity(daily),date('Started')];
+ const graph=await compile(records,policy),reverse=graph.evidenceBetween(daily.id,meeting.id)[0];
+ assert.equal(reverse.definition,'start-of');assert.equal(reverse.fieldName,'Started');assert.equal(reverse.sourceKind,'date-property');
+ assert.equal(reverse.inverseFieldName,'Start of');assert.equal(reverse.role,'child');
+ const patch=new c.NormalizedSourcePatchPreparer(meeting.id,policy,runtime(),{entity:ref=>entity(ref)});
+ await feed(patch,records);const result=await patch.finish();assert.equal(result.outcome,'prepared');
+ assert.deepEqual(declarations(result.patch.compilation),declarations(graph));
 });
 
 /** Execute the actual consumer filter; no mutation safety predicate is reconstructed by this fixture. */

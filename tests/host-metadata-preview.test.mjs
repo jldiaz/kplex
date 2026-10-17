@@ -758,4 +758,3 @@ test("metadataImpactTargets expands forward and inverse slash syntax in hierarch
   assert(forwardTargets, "Bounded metadata observation must return impact targets");
   assert(forwardTargets.has("ParentNote"), "Impact targets must detect target from forward property 'replies to'");
 });
-

@@ -1154,6 +1154,42 @@ ${production}
   flushSync(() => host.querySelector(".kplex-add-related-link-button").click());
   await new Promise((resolve) => setTimeout(resolve, 0));
   check(intents.length === 1 && intents[0][1] === "right" && intents[0][2].file === target.file && commits === 1 && closes === 1, "history fixed target did not commit through the shared Link action");
+  // Hold an actual drawing submission after durability: ordinary progress must never offer recovery.
+  const style = document.createElement("style"); style.textContent = ${JSON.stringify(readFileSync(join(root, "styles.css"), "utf8"))}; document.head.append(style);
+  const created = { path: "Projects/" + "Long-folder-name/".repeat(8) + "Drawing.md", file: { path: "", extension: "md" } }; created.file.path = created.path;
+  const originalLookup = plugin.app.vault.getFileByPath;
+  plugin.app.vault.getFileByPath = path => path === created.path ? created.file : originalLookup(path);
+  plugin.isExcalidrawAvailable = () => true;
+  plugin.translator = (key, params) => params?.error ? "Reason: " + params.error : params?.path ? "Created " + params.path + "; setup or linking failed. Retry using this file." : key;
+  let creations = 0, links = 0, rejectLink;
+  plugin.createNewRelatedFileForOrigin = async (_origin, _query, kind) => { check(kind === "excalidraw", "wrong drawing kind"); creations++; return created.file; };
+  plugin.rememberNewNodeDefaultType = async () => {};
+  plugin.linkNewRelatedFile = async (_origin, _role, file) => { check(file === created.file, "recovery changed physical file identity"); links++; if (links === 1) await new Promise((_resolve, reject) => { rejectLink = reject; }); return { state: "saved-pending", page: created }; };
+  plugin.openInDocumentLeaf = async file => check(file === created.file, "open changed physical file identity");
+  flushSync(() => root.render(createElement(RelatedNoteComposer, { key: "drawing-recovery", plugin, origin, session, initialRole: "child" })));
+  flushSync(() => type(host.querySelector(".kplex-add-related-note-search input"), "Drawing"));
+  flushSync(() => host.querySelector('[aria-label="addRelated.createExcalidrawLink"]').click());
+  await new Promise(resolve => setTimeout(resolve, 0)); flushSync(() => {});
+  check(creations === 1 && links === 1 && rejectLink, "drawing did not reach held relationship step");
+  check(!host.querySelector(".kplex-add-related-recovery"), "normal in-progress creation falsely offered recovery");
+  rejectLink(new Error("Owned relationship failure")); await new Promise(resolve => setTimeout(resolve, 0)); flushSync(() => {});
+  const panel = host.querySelector(".kplex-add-related-recovery");
+  check(panel?.getAttribute("role") === "alert" && panel.textContent.includes(created.path), "actual failure lost its durable file path");
+  check(panel.querySelector(".kplex-add-related-recovery-reason")?.textContent.includes("Owned relationship failure"), "failure reason disappeared with the notice");
+  check(!host.querySelector(".kplex-add-related-create-hint"), "failure retained contradictory create instructions");
+  check([...host.querySelectorAll(".kplex-add-related-type-button")].every(button => button.disabled), "partial file allowed fresh drawing/Markdown/placeholder creation");
+  for (const width of [680, 260]) {
+    host.style.width = width + "px";
+    const actions = panel.querySelector(".kplex-add-related-recovery-actions"), buttons = [...actions.querySelectorAll("button")];
+    const [a, b] = buttons.map(button => button.getBoundingClientRect());
+    check(getComputedStyle(actions).display === "flex" && getComputedStyle(actions).flexWrap === "wrap", "recovery actions do not wrap");
+    check(a.right + 7 <= b.left || a.bottom + 7 <= b.top, "recovery actions touch or overlap at width " + width);
+    check(panel.scrollWidth <= panel.clientWidth, "long path overflowed recovery panel at width " + width);
+    check(actions.getBoundingClientRect().top >= panel.querySelector(".kplex-add-related-recovery-reason").getBoundingClientRect().bottom, "actions overlap failure text");
+  }
+  flushSync(() => panel.querySelector("button").click()); await new Promise(resolve => setTimeout(resolve, 0));
+  check(creations === 1 && links === 2, "retry created another file or failed to link the retained file");
+  style.remove();
   flushSync(() => root.unmount());
   check(!document.body.querySelector(".kplex-fuzzy-floating-results"), "composer list survived unmount");
   result.dataset.status = "passed"; result.textContent = "Related composer browser behavior passed";
@@ -1214,10 +1250,10 @@ test("ActionButton rendered browser behavior", () => {
 /** Exercise production reconciliation keys and thought DOM across a mutable rename/placeholder handover. */
 function attachmentRenameBrowserEntry() {
   return `
-import React, { useMemo } from "react";
+import React, { useId, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { alphaHexToCss, resolveNodeStyle } from ${JSON.stringify(join(root, "src/index/style.ts"))};
+import { alphaHexToCss, resolveNodeStyle, currentNodeColorStyle, nodePaint, nodePaintFallbacks } from ${JSON.stringify(join(root, "src/index/style.ts"))};
 import { effectiveLabelLimit, nodeLabelFontSize, gateDiameter, projectNodeCounts, expandedMiniLayout, siblingScale } from ${JSON.stringify(join(root, "src/ui/layout.ts"))};
 import { physicalPositionLabel } from ${JSON.stringify(join(root, "src/ui/features/positionPresentation.ts"))};
 
@@ -1234,7 +1270,9 @@ const translate = (key) => key;
 const interaction = { gates: new Set(), nodePaths: new Set() }, connectDrag = null, nodeDrag = null;
 // The production unfiltered projection is absent; rename reconciliation must not invent a filtered read.
 const globalFiltering = false, filteredGateCounts = null, nodeVisuals = new Map();
-const predicate = null, lenses = { lenses: [] }, predicateEngine = {}, predicateRevision = 0, layoutRevision = 0;
+const predicate = null, lenses = { lenses: [] }, paintLenses = lenses, predicateEngine = {}, predicateRevision = 0, layoutRevision = 0;
+let styleReads=0;const measuredStyle=()=>new Proxy({textColor:"#abcdef"},{ownKeys(target){styleReads++;return Reflect.ownKeys(target)}});
+settings.baseNodeStyle=measuredStyle();let paintSettings=settings;
 const graphLensNodeStyle = () => ({});
 const centralEditorCapable = true, finding = false, hover = null, activeNodeFlair = null, findNodePaths = new Set(), keyboardSelection = null;
 const connectionStateFor = () => "normal", onCentralNodeEditorChange = () => {}, gateKey = (path, gate) => path + ":" + gate;
@@ -1250,12 +1288,12 @@ const index = { gateStats: () => gates, neighbours: () => [{ page: miniPage, rol
 const node = (page, role, x, y, height = 26) => ({ page, role, x, y, width: 180, height, style: { fontSize: 18 }, label: page.name, neighbourCount: 0, gateStats: gates });
 /** Render actual base nodes with separate zone-local/count-hydrated display copies. */
 function Scene({ scene: sourceScene, expanded }) {
-  const scene = { ...sourceScene, zoneViewports: {}, zoneAreas: {} };
+  const scene = useMemo(() => ({ ...sourceScene, zoneViewports: {}, zoneAreas: {} }), [sourceScene]);
   const centralEditorPage = expanded ? centerPage : null;
-  const sectionExpansion = null, expandedScrollTop = {};
+  const sectionExpansion = null, expandedScrollTop = useMemo(() => ({}), []);
   const visibleNodePaths = useMemo(() => new Set(scene.nodes.map((item) => item.page.path)), [scene.nodes]);
   const renderedNodeMap = useMemo(() => new Map(scene.nodes.map((item) => [item.page.path, { ...item }])), [scene.nodes]);
-  ${uiDefinitions("src/ui/PlexGraph.tsx", ["sceneNodeKeys", "expandedClusters", "renderNode", "renderExpandedCluster", "zoneForRole"])}
+  ${uiDefinitions("src/ui/PlexGraph.tsx", ["paintedNodeStyles", "sceneNodeKeys", "expandedClusters", "renderNode", "renderExpandedCluster", "zoneForRole"])}
   const miniKeys = expandedClusters.flatMap((cluster) => cluster.children.map((child) => child.key));
   check(new Set(miniKeys).size === miniKeys.length, "expanded connector keys collide during rename");
   return <><div className="kplex-nodes">{scene.nodes.map((item) => renderNode(item, { ...item }))}</div><div>{expandedClusters.map(renderExpandedCluster)}</div></>;
@@ -1271,6 +1309,11 @@ try {
   const attachments = () => [...container.querySelectorAll(".kplex-thought")].filter((element) => element.dataset.kplexPath === "After.png");
   const clusters = () => container.querySelectorAll(".kplex-expanded-cluster").length;
   render(initial, true);
+  const firstStyleReads=styleReads;render(initial,true);render(initial,true);
+  check(styleReads===firstStyleReads,"Stable scene rerenders repeated style-dictionary work");
+  paintSettings={...settings,baseNodeStyle:measuredStyle()};render(initial,true);
+  check(styleReads>firstStyleReads,"New paint settings failed to re-resolve colors");
+  const recoloredReads=styleReads;render(initial,true);check(styleReads===recoloredReads,"New paint cache did not settle");
   check(container.querySelectorAll(".kplex-thought").length === 4, "initial real endpoint and unresolved placeholder were not distinct");
   check(clusters() === 3, "fixture did not render expanded strips through the production owner");
   // GraphIndex.renameTreeEndpoint intentionally retains canonical page identity and mutates its
@@ -1373,7 +1416,7 @@ try{
  const touchDoubleTap={current:{reset(){}}},areaSettingsDismissPointer={current:null},areaResizeDrag={current:null},pendingGateLongPress={current:null},panDrag={current:null};
  let relocatedRow=null;
  const touchLongPress={current:null},setNodeDrag=value=>{nodeDrag=value;if(value?.path&&relocatedRow)relocatedRow.remove()};let resizeFinishes=0,areaClears=0;
- const viewport={current:null},neighborhood={center:origin},renderedNodeMap=new Map(),toWorld=(x,y)=>({x,y});
+ const viewport={current:null},neighborhood={center:origin},renderedNodeMap=new Map(),toWorld=(x,y)=>({x,y}),areaOutline={current:null};
  const finishAreaResize=()=>{resizeFinishes++;return true},setAreaHoverIfChanged=()=>areaClears++;
  const setConnectDrag=value=>{connectDrag=value},clearHoverIntent=()=>{};
  ${history}
@@ -1431,7 +1474,7 @@ try{
 function externalAndPinnedDropBrowserEntry() {
   const callbacks = uiDefinitions("src/ui/PlexGraph.tsx", ["normalizedRole", "semanticRoleForGate", "toWorld", "isAreaControlTarget", "isEmptyAreaTarget", "areaHoverAt",
     "relationshipDropRoles", "historyRelationshipTarget", "clearHistoryDragHover", "updateHistoryDragHover", "openHistoryRelationshipMenu",
-    "externalFileDropTarget", "dragExternalFileOver", "leaveExternalFile", "dropExternalFile", "semanticRoleForPosition", "relationshipDropArea", "up"]);
+    "externalFileDropTarget", "dragExternalFileOver", "leaveExternalFile", "dropExternalFile", "semanticRoleForPosition", "nodeDropRole", "relationshipDropArea", "up"]);
   return `
 import {getDraggedFile} from ${JSON.stringify(join(root,"src/adapters/obsidian/fileExplorerDrag.ts"))};
 import {captureSurfaceContinuation} from ${JSON.stringify(join(root,"src/ui/surfaceContinuation.ts"))};
@@ -1451,6 +1494,8 @@ try {
  const viewport={current:surface},camera={current:{x:0,y:0,scale:1}},neighborhood={center:origin},historyDragHover={current:null};
  let connectDrag=null,nodeDrag=null,externalDropZone=null;const setExternalDropZone=value=>{externalDropZone=value};const areaResizeDrag={current:null},pendingGateLongPress={current:null},touchLongPress={current:null},suppressActivateUntil={current:0};
  const finishAreaSettingsDismiss=()=>{},setConnectDrag=value=>{connectDrag=value},setNodeDrag=value=>{nodeDrag=value},renderedNodeMap=new Map();
+ const optimisticCommitToken={current:0};let optimistic=null,updating=false;
+ const setOptimisticRelink=value=>{optimistic=value},setRelationshipUpdating=value=>{updating=value};
  const scene={zoneAreas:{parent:{left:300,top:60,width:110,height:100,resizeEdge:"top"},child:{left:450,top:60,width:110,height:100,resizeEdge:"bottom"},left:{left:300,top:230,width:110,height:100,resizeEdge:"top"},right:{left:450,top:230,width:110,height:100,resizeEdge:"top"}}};
  const ZONES=["parent","child","left","right","sibling"],AREA_RESIZE_EDGE_PX=10;
  ${callbacks}
@@ -1511,9 +1556,26 @@ try {
  connectDrag.current={x:40,y:365};check(relationshipDropArea()===null,"pinned target retained area preview");
  connectDrag.current={x:1000,y:700};check(relationshipDropArea()===null,"outside pointer retained gate preview");
  other.style.setProperty("left","320px");other.style.setProperty("top","100px");other.dataset.kplexPath=target.path;other.dataset.kplexGate="left";
- connectDrag.current={x:330,y:110};check(relationshipDropArea()==="right","hovered gate inverse role missing");
+ connectDrag.current={x:330,y:110};check(relationshipDropArea()===null,"node-to-node gate target must not highlight a center relation area");
  target.isFolder=true;check(relationshipDropArea()===null,"structural endpoint highlighted");delete target.isFolder;
+ connectDrag={originPath:target.path,gate:"left",current:{x:700,y:300},moved:true};
+ check(relationshipDropArea()===null,"noncentral gate origin highlighted a center relation area");
  connectDrag=null;check(relationshipDropArea()===null,"cancel retained area preview");
+
+ // The same real area geometry owns sibling preview and submitted composer intent. Only the
+ // center/sibling pair is handed to the additive create flow; shared-parent evidence stays intact.
+ const sibling={page:target,role:"sibling",linkDirection:"shared-parent"};scene.nodes=[sibling];
+ for(const [role,x,y]of [["parent",350,80],["child",510,80],["left",350,280],["right",510,280]]){
+  nodeDrag={path:target.path,pointerId:31,x,y,offsetX:0,offsetY:0,startClientX:800,startClientY:550,moved:true};
+  renderedNodeMap.set(target.path,{...sibling,x,y});
+  check(relationshipDropArea()===role,"sibling did not preview exact area: "+role);
+  const before=calls.length;up({...event(x,y),pointerId:31,pointerType:"mouse"});
+  const opened=calls.at(-1);check(calls.length===before+1&&opened.mode==="create"&&opened.origin===origin&&opened.fixedTarget===target&&opened.semanticRole===role,"sibling drop did not add the center relation: "+role);
+  check(opened.existingDirection===undefined&&sibling.linkDirection==="shared-parent","sibling shared-parent relation was treated as a moved direct relation");
+  check(nodeDrag===null,"sibling drag did not retire");
+ }
+ nodeDrag={path:target.path,pointerId:32,x:700,y:500,offsetX:0,offsetY:0,startClientX:800,startClientY:550,moved:true};
+ check(relationshipDropArea()===null,"sibling accepted empty canvas outside real areas");nodeDrag=null;
  pages.delete(target.path);e=event(90,90);dragExternalFileOver(e);check(externalDropZone==="center","unindexed center did not preview queued navigation");e=event(90,90);dropExternalFile(e);check(!e.stopped,"unindexed center drop lost App readiness fallback");
  result.dataset.status="passed";result.textContent="External and pinned drop behavior passed";
 }catch(error){result.dataset.status="failed";result.textContent=String(error.stack||error)}
@@ -1524,6 +1586,43 @@ test("External file areas and pinned relationship targets use shared production 
   const app=readFileSync(join(root,"src/ui/App.tsx"),"utf8");
   assert.match(app, /className="kplex-pinned-open" data-kplex-pinned-path=\{pinned.path\}/);
   runBrowserDom(externalAndPinnedDropBrowserEntry(),"External and pinned drop behavior passed");
+});
+
+/** Verify painted gate coordinates and approach directions through real zoomed, scrolled DOM. */
+function draftConnectorBrowserEntry() {
+  const callbacks = uiDefinitions("src/ui/PlexGraph.tsx", ["gateVector", "cubicPoint", "edgeGeometry", "oppositeGate", "toWorld", "connectionDragPath"]);
+  return `
+const result=document.querySelector("#result"),check=(ok,message)=>{if(!ok)throw Error(message)};
+try{
+ const surface=document.body.appendChild(document.createElement("div"));surface.style.cssText="position:absolute;left:10px;top:20px;width:900px;height:700px";
+ const camera={current:{x:40,y:40,scale:1.25}},viewport={current:surface},settings={connectorStyle:"bezier"};
+ const layer=surface.appendChild(document.createElement("div"));layer.style.cssText="position:absolute;left:0;top:0;transform-origin:0 0;transform:translate(40px,40px) scale(1.25)";
+ const scroll=layer.appendChild(document.createElement("div"));scroll.style.cssText="position:absolute;left:20px;top:30px;width:600px;height:260px;overflow:auto";
+ const content=scroll.appendChild(document.createElement("div"));content.style.cssText="position:relative;height:800px";
+ const make=(path,left,top)=>{const node=content.appendChild(document.createElement("div"));node.dataset.kplexPath=path;node.style.cssText="position:absolute;width:44px;height:28px;left:"+left+"px;top:"+top+"px";const gate=node.appendChild(document.createElement("span"));gate.dataset.kplexGate="left";gate.style.cssText="position:absolute;left:-14px;top:7px;width:14px;height:14px";return gate};
+ const source=make("Source.md",36,200),target=make("Target.md",330,240),page={path:"Target.md"};
+ const index={get:path=>path===page.path?page:null},connectBlockedPaths=new Set();
+ let connectDrag={originPath:"Source.md",sourceGateElement:source,gate:"left",current:{x:0,y:0}};
+ ${callbacks}
+ for(const top of [90,160])for(const side of ["left","right","top","bottom"]){
+  scroll.scrollTop=top;target.dataset.kplexGate=side;
+  const a=source.getBoundingClientRect(),b=target.getBoundingClientRect();
+  // Deliberately hover away from the port center; snapping must select its actual painted center.
+  connectDrag.current=toWorld(b.left+2,b.top+2);
+  check(surface.ownerDocument.elementFromPoint(b.left+2,b.top+2)===target,"Fixture target is clipped/covered");
+  const values=connectionDragPath().match(/-?\\d+(?:\\.\\d+)?/g).map(Number),start=toWorld(a.left+a.width/2,a.top+a.height/2),end=toWorld(b.left+b.width/2,b.top+b.height/2);
+  check(Math.abs(values[0]-start.x)<0.001&&Math.abs(values[1]-start.y)<0.001,"draft origin escaped the visible scrolled gate");
+  check(Math.abs(values[6]-end.x)<0.001&&Math.abs(values[7]-end.y)<0.001,"draft failed to snap to target gate center");
+  const vector=gateVector(side);check((values[4]-end.x)*vector.x+(values[5]-end.y)*vector.y>0,"target gate approach is reversed: "+side);
+ }
+ source.remove();check(connectionDragPath()===null,"detached gate retained a draft connector");
+ result.dataset.status="passed";result.textContent="Draft connector gate geometry passed";
+}catch(error){result.dataset.status="failed";result.textContent=String(error.stack||error)}
+`;
+}
+
+test("draft connectors follow actual scrolled gates and the destination gate direction",()=>{
+  runBrowserDom(draftConnectorBrowserEntry(),"Draft connector gate geometry passed");
 });
 
 /** Exercise the production glow and shared CSS across covered/clipped areas and both host themes. */
@@ -1911,13 +2010,69 @@ test("Native hotkey pills support disable, customize, restore, conflicts and rec
  runBrowserDom(internalHotkeySettingsBrowserEntry(),"Native hotkey pills and recording lifecycle passed");
 });
 
+/** Keep native compact titles separate from accessible naming without altering gate or preview ownership. */
+function nodeTooltipBrowserEntry() {
+ return `
+import React, {useId} from 'react';
+import {flushSync} from 'react-dom';
+import {createRoot} from 'react-dom/client';
+import {nodePaint,nodePaintFallbacks} from ${JSON.stringify(join(root,'src/index/style.ts'))};
+import {effectiveLabelLimit,nodeLabelFontSize,gateDiameter} from ${JSON.stringify(join(root,'src/ui/layout.ts'))};
+import {physicalPositionLabel} from ${JSON.stringify(join(root,'src/ui/features/positionPresentation.ts'))};
+import {canDisplayNodeImage} from ${JSON.stringify(join(root,'src/core/plex/nodeImagePolicy.ts'))};
+import {createTranslator} from ${JSON.stringify(join(root,'src/lang/index.ts'))};
+const ObsidianIcon=()=>null;
+${uiDefinitions('src/ui/ThoughtNode.tsx',['GATES','ThoughtNode'])}
+const result=document.querySelector('#result'),container=document.body.appendChild(document.createElement('div')),root=createRoot(container);
+const check=(condition,message)=>{if(!condition)throw Error(message)},translate=createTranslator('en'),noop=()=>{};
+const label='A long meaningful note name',page={path:'Folder/Original.md',name:label},gates=Object.fromEntries(['top','bottom','left','right'].map(gate=>[gate,{visibleCount:0,complete:true,hasAny:false}]));
+const node={page,label,role:'child',style:{prefix:'@ ',maxLabelLength:8},x:0,y:0,width:180,height:40,gateStats:gates},settings={baseFontSize:12.4,showNeighborCount:false};
+const events={preview:0,node:0,gate:0,end:0};
+const props={node,settings,selected:false,highlighted:false,dimmed:false,highlightedGates:new Set(),translate,onActivate:noop,onOpen:noop,onHoverNode:()=>events.node++,onHoverGate:()=>events.gate++,onHoverEnd:()=>events.end++,onHoverPreview:()=>events.preview++,onGatePointerDown:noop,onNodePointerDown:noop};
+try{
+ let firstNameId;
+ for(const mode of [null,'thumbnail','replace']){
+  const visual=mode?{mode,path:'Picture.png',src:'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',alt:'Local picture'}:undefined;
+  flushSync(()=>root.render(<ThoughtNode {...props} visual={visual}/>));
+  const element=container.querySelector('.kplex-thought'),nameId=element.getAttribute('aria-labelledby'),name=document.getElementById(nameId);
+  check(name&&name.classList.contains('kplex-accessible-name'),'Node lost its established accessible-name mechanism');
+  check(name.textContent===translate('node.accessibleLabel',{label,path:page.path}),'Localized accessible name lost note label/path');
+  check(!element.hasAttribute('aria-label')&&!element.hasAttribute('title'),'Node reintroduced a competing host tooltip');
+  check(firstNameId===undefined||nameId===firstNameId,'Same mounted node changed its accessible name identity');firstNameId=nameId;
+  const text=container.querySelector('.kplex-thought-text');
+  if(mode!=='replace')check(text.title==='@ '+label&&text.textContent==='@ A lon…','Compact full-title hint or visible truncation changed');
+  if(mode)check(container.querySelector('.kplex-node-visual').title===visual.alt,'Image compact title changed');
+  for(const gate of container.querySelectorAll('.kplex-gate'))check(gate.getAttribute('aria-label')&&!gate.hasAttribute('title'),'Gate native hint/accessibility changed');
+ }
+ const element=container.querySelector('.kplex-thought');
+ element.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse'}));
+ check(events.node===1&&events.preview===0,'Unmodified pointer unexpectedly opened page preview');
+ element.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,pointerType:'mouse'}));
+ element.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse',ctrlKey:true}));
+ check(events.preview===1&&events.node===2,'Explicit page preview stopped forwarding');
+ const gate=container.querySelector('.kplex-gate');
+ element.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,pointerType:'mouse',relatedTarget:gate}));
+ gate.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse',relatedTarget:element}));
+ check(events.gate===1,'Gate hover ownership changed');
+ flushSync(()=>root.render(<><ThoughtNode {...props}/><ThoughtNode {...props}/></>));
+ const ids=[...container.querySelectorAll('.kplex-thought')].map(node=>node.getAttribute('aria-labelledby'));
+ check(ids.length===2&&new Set(ids).size===2&&ids.every(id=>document.getElementById(id)),'Repeated node occurrences share accessible-name IDs');
+ result.dataset.status='passed';result.textContent='Node tooltip ownership passed';
+}catch(error){result.dataset.status='failed';result.textContent=String(error?.stack??error)}finally{flushSync(()=>root.unmount());container.remove()}
+`;
+}
+
+test('nodes retain compact delayed titles and accessible names without a duplicate styled tooltip owner',()=>{
+ runBrowserDom(nodeTooltipBrowserEntry(),'Node tooltip ownership passed');
+});
+
 /** Render the actual ThoughtNode text and geometry for long titles/aliases across independent density values. */
 function typographyLabelsBrowserEntry() {
   return `
-import React from "react";
+import React, { useId } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { alphaHexToCss } from ${JSON.stringify(join(root, "src/index/style.ts"))};
+import { alphaHexToCss, nodePaint, nodePaintFallbacks } from ${JSON.stringify(join(root, "src/index/style.ts"))};
 import { effectiveLabelLimit, nodeLabelFontSize, gateDiameter } from ${JSON.stringify(join(root, "src/ui/layout.ts"))};
 ${uiDefinitions("src/ui/layout.ts", ["clamp", "nodeSize"])}
 import { physicalPositionLabel } from ${JSON.stringify(join(root, "src/ui/features/positionPresentation.ts"))};
@@ -1983,3 +2138,41 @@ try{
 test("long node titles and aliases retain exact rendered truncation and measured width across all density values", () => {
   runBrowserDom(typographyLabelsBrowserEntry(), "Density-independent rendered typography passed");
 });
+
+/** Execute the production App/scene memo owners and layout with real React reconciliation. */
+function colorPaintBrowserEntry() {
+ return `
+import React, {useMemo,useEffect,useState} from 'react';
+import {flushSync} from 'react-dom';import {createRoot} from 'react-dom/client';
+import {buildScene as realBuildScene} from ${JSON.stringify(join(root,'src/ui/layout.ts'))};
+import {currentNodeColorStyle,nodePaint,nodePaintFallbacks} from ${JSON.stringify(join(root,'src/index/style.ts'))};
+const result=document.querySelector('#result'),check=(condition,message)=>{if(!condition)throw Error(message)};
+const counters={layout:0,images:0,mounts:0};const buildScene=(...args)=>{counters.layout++;return realBuildScene(...args)};
+const page=path=>({path,name:path,file:{extension:'md'},aliases:[],tags:[],styleTags:[],neighbours:new Map()});
+const index={titleFor:p=>p.name,neighbourCount:()=>0,gateStats:()=>({}),neighbours:()=>[],visibleRelationshipsWithin:()=>[]};
+const layoutNeighborhood={center:page('Center.md'),parents:[],children:[{page:page('Child.md'),relationType:1}],leftFriends:[],rightFriends:[],siblings:[]};
+const layoutSectionExpansion=null,expandedSectionIds=new Set(),layoutRevision=0,showCrossLinks=false,globalFiltering=false,centralEditorSize=undefined;
+const profileSurface='tab',compiledGraphLenses={lenses:[],errors:[],usesFrontmatter:false};
+const plugin={settings:{baseNodeStyle:{fontSize:18,textColor:'#abcdef'},centralNodeStyle:{fontSize:30},baseLinkStyle:{},noteTypeStyles:{},tagNodeStyles:{},tagStyleList:[],hierarchyLinkStyles:{},graphLenses:[],
+ compactingFactor:2,horizontalCompactingFactor:2,graphDepth:1,baseFontSize:12.4,compactView:false,maxItemCount:100,parentColumns:2,childColumns:5,parentMaxHeight:300,childMaxHeight:400,friendMaxHeight:350,siblingMaxHeight:250,siblingRelativeSize:50,minLinkLength:18,wrapNodeLabels:false},getViewSettings(){return {...this.settings}}};
+let sceneBefore,nodeBefore,inputBefore,cameraBefore;
+function NativeEditor(){useEffect(()=>{counters.mounts++},[]);return <input defaultValue='unsaved text'/>}
+function Scene({settings,paintSettings}){
+ ${uiDefinitions('src/ui/PlexGraph.tsx',['scene'])}
+ const visualPages=useMemo(()=>scene.nodes.map(node=>node.page),[scene.nodes]);useEffect(()=>{counters.images++},[visualPages]);
+ return <div className='camera' style={{transform:'translate(17px, 23px) scale(1.25)'}}>{scene.nodes.map(node=>{const paint=nodePaint(currentNodeColorStyle(node,paintSettings),nodePaintFallbacks(node));return <div key={node.page.path} data-path={node.page.path} style={{color:paint.foreground,left:node.x,top:node.y}}>{node.role==='center'?<NativeEditor/>:node.label}</div>})}</div>;
+}
+function App({paintRevision,renderRevision}){
+ ${uiDefinitions('src/ui/App.tsx',['viewSettings','paintSettings','paintLenses'])}
+ return <Scene settings={viewSettings} paintSettings={paintSettings}/>;
+}
+try{const container=document.createElement('div');document.body.append(container);const root=createRoot(container);flushSync(()=>root.render(<App paintRevision={0} renderRevision={0}/>));
+ const prior={...counters};nodeBefore=container.querySelector('[data-path="Center.md"]');inputBefore=container.querySelector('input');cameraBefore=container.querySelector('.camera');inputBefore.value='still typing';inputBefore.focus();inputBefore.setSelectionRange(2,5);
+ plugin.settings.baseNodeStyle={...plugin.settings.baseNodeStyle,textColor:'#12345680'};flushSync(()=>root.render(<App paintRevision={1} renderRevision={0}/>));
+ check(counters.layout===prior.layout,'Color edit rebuilt whole scene');check(counters.images===prior.images,'Color edit reacquired imagery');check(counters.mounts===prior.mounts,'Color edit remounted native editor');
+ check(container.querySelector('[data-path="Center.md"]')===nodeBefore&&container.querySelector('input')===inputBefore,'Color edit replaced DOM');check(inputBefore.value==='still typing'&&document.activeElement===inputBefore&&inputBefore.selectionStart===2,'Draft/focus/caret lost');check(container.querySelector('.camera')===cameraBefore&&cameraBefore.style.transform==='translate(17px, 23px) scale(1.25)','Camera reset');check(/^rgba\\(18, 52, 86, 0\\.50?2?\\)$/.test(getComputedStyle(nodeBefore).color),'Current winning source did not repaint');
+ plugin.settings.baseNodeStyle={...plugin.settings.baseNodeStyle,fontSize:21};flushSync(()=>root.render(<App paintRevision={1} renderRevision={1}/>));check(counters.layout===prior.layout+1,'Geometry edit skipped layout');flushSync(()=>root.unmount());result.dataset.status='passed';result.textContent='Color paint preserves layout and editor passed';
+}catch(error){result.dataset.status='failed';result.textContent=String(error.stack||error)}
+`;
+}
+test('color publication reuses actual scene layout, images, native editor, focus and camera',()=>runBrowserDom(colorPaintBrowserEntry(),'Color paint preserves layout and editor passed'));

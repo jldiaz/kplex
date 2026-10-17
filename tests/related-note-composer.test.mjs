@@ -47,7 +47,7 @@ test("native Modal isOpen boolean cannot shadow composer readiness for button or
     complete: async () => { completions++; finished.resolve(); },
     plugin: { app: { vault: { getFileByPath: () => created.file } }, translator: key => key,
       createNewRelatedFileForOrigin: async () => { writes++; return created.file; },
-      rememberNewNodeDefaultType: async () => {}, linkNewRelatedFile: async () => created } };
+      rememberNewNodeDefaultType: async () => {}, linkNewRelatedFile: async () => ({ state: "saved-pending", page: created }) } };
   dependencies.beginWrite = production("beginWrite", dependencies);
   dependencies.createNew = production("createNew", dependencies);
   const submit = production("submit", { continuation: "return", selectedTarget: null, webLinkAvailable: false,
@@ -131,12 +131,12 @@ test("partial file recovery reuses exact created file and never reissues create"
     session: { isSessionOpen: () => true, setWriting() {} }, busyRef: { current: true }, setBusy() {}, prepareField: async () => "children",
     refreshCapturedPage: (_plugin, value) => value, setPartialFile() {}, setDefaultCreateType() {}, reportFailure: assert.fail,
     complete: async (...args) => complete.push(args), plugin: { app: { vault: { getFileByPath: () => created.file } },
-      createNewRelatedFileForOrigin: assert.fail, rememberNewNodeDefaultType: async () => {}, linkNewRelatedFile: async (_origin, _role, file, _field, _alias, _query, recoverMetadata) => { assert.equal(file, created.file); assert.equal(recoverMetadata, true); return created; } } };
-  await production("createNew", dependencies)("markdown"); assert.deepEqual(complete, [[created, "return", true]]);
+      createNewRelatedFileForOrigin: assert.fail, rememberNewNodeDefaultType: async () => {}, linkNewRelatedFile: async (_origin, _role, file, _field, _alias, _query, recoverMetadata) => { assert.equal(file, created.file); assert.equal(recoverMetadata, true); return { state: "saved-pending", page: created }; } } };
+  await production("createNew", dependencies)("markdown"); assert.deepEqual(complete, [[created, "return", true, "saved-pending"]]);
 });
 
 test("another resets target/name/alias after confirmed publication and retains role/ontology/type", async () => {
-  const affected = page("C.md"), events = [], setters = Object.fromEntries(["setSelectedTarget", "setQuery", "setAlias", "setNoteTyped", "setAliasFocused", "setPartialFile", "setOntologyTyped", "setBrowseOntology"].map(name => [name, value => events.push([name, value])]));
+  const affected = page("C.md"), events = [], setters = Object.fromEntries(["setSelectedTarget", "setQuery", "setAlias", "setNoteTyped", "setAliasFocused", "setPartialFile", "setPartialFailure", "setOntologyTyped", "setBrowseOntology"].map(name => [name, value => events.push([name, value])]));
   await production("complete", { ...setters, onCommitted: value => events.push(["commit", value]), session: { canComplete: () => true, focusName: () => events.push(["focus"]) }, plugin: { requestNodeFlair() {} } })(affected, "another", true);
   assert.equal(events[0][0], "commit"); assert(events.some(([name, value]) => name === "setQuery" && value === ""));
   assert(events.some(([name, value]) => name === "setAlias" && value === "")); assert.equal(events.at(-1)[0], "focus");
@@ -220,4 +220,43 @@ test("another focus waits for the enabled field and ignores a dismissed frame", 
   field.disabled = false; runFrame(); assert.equal(field.focused, true);
   field.focused = false; focusName(); focusName(); assert.equal(cancelled.length, 1);
   open = false; runFrame(); assert.equal(field.focused, false); assert.equal(frames.size, 0);
+});
+
+/** Normal file durability must not publish failure UI while the relationship is still in flight. */
+test("drawing creation retains recovery state only after a genuine failure", async () => {
+  const created = page("Drawing.md"), hold = deferred(), failures = [], pendingFiles = [];
+  const dependencies = { selectedTarget: null, webUrl: null, partialFile: null, nameValidation: { valid: true, existing: false },
+    beginWrite: () => true, prepareField: async () => "Children", origin: page("A.md"), refreshCapturedPage: (_plugin, value) => value,
+    session: { isSessionOpen: () => true, setWriting() {} }, query: "Drawing", alias: "", role: "child", continuation: "return",
+    busyRef: { current: true }, setBusy() {}, setPartialFile: value => pendingFiles.push(value), setDefaultCreateType() {},
+    complete: assert.fail, reportFailure: (...args) => failures.push(args),
+    plugin: { app: { vault: { getFileByPath: () => created.file } }, createNewRelatedFileForOrigin: async () => created.file,
+      rememberNewNodeDefaultType: async () => {}, linkNewRelatedFile: () => hold.promise } };
+  const operation = production("createNew", dependencies)("excalidraw");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(pendingFiles, [], "durable creation is progress, not partial failure");
+  const error = new Error("Relationship could not be saved"); hold.resolve(Promise.reject(error)); await operation;
+  assert.equal(failures[0][0], error); assert.equal(failures[0][2], created.file);
+});
+
+/** Creation and linking failures retain the same exact file and a persistent reason, without duplicate notices. */
+test("partial recovery retains the failure reason as well as file identity", () => {
+  class SavedRelationshipPendingError extends Error {}
+  class PartialRelatedFileError extends Error { constructor(file) { super("Metadata write failed"); this.file = file; } }
+  const created = page("Drawing.md"), files = [], reasons = [];
+  const report = production("reportFailure", { SavedRelationshipPendingError, PartialRelatedFileError,
+    session: { isSessionOpen: () => true }, setPartialFile: file => files.push(file), setPartialFailure: reason => reasons.push(reason),
+    Notice: class { constructor() { assert.fail("Persistent partial failure must not duplicate a fleeting notice"); } } });
+  report(new PartialRelatedFileError(created.file));
+  report(new Error("Relationship write failed"), undefined, created.file);
+  assert.deepEqual(files, [created.file, created.file]); assert.deepEqual(reasons, ["Metadata write failed", "Relationship write failed"]);
+});
+
+/** A newly created file is ready to edit after persistence even while its graph reconciliation remains pending. */
+test("saved new-file relationship still completes Open for editing while indexing is pending", async () => {
+  const created = page("Child.md"), outcomes = [], edits = [];
+  await production("complete", { onCommitted: outcome => outcomes.push(outcome), editAfterCreate: true,
+    session: { canComplete: () => true, closeForCompletion: intent => edits.push(intent), finishCompletion() {}, focusGraph: assert.fail },
+    plugin: { requestNodeFlair() {}, finishNewRelatedNode: async (...args) => edits.push(args.slice(0, 3)) }, hostLeaf: "owning-leaf" })(created, "configured", true, "saved-pending");
+  assert.deepEqual(outcomes, [{ state: "saved-pending", page: created }]); assert.deepEqual(edits, ["configured", [created, "owning-leaf", true]]);
 });

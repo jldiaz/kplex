@@ -12,7 +12,7 @@ process.on("exit", () => rmSync(temp, { recursive: true, force: true }));
 await build({ stdin: { contents: 'export * from "./src/core/plex/typographyPreferences"; export * from "./src/settings"; export * from "./src/core/graph/settingsPolicy"; export * from "./src/ui/viewProfile"; export * from "./src/index/style";', resolveDir: process.cwd() },
   outfile: join(temp, "model.mjs"), bundle: true, platform: "node", format: "esm", plugins: [{ name: "host", setup(b) {
     b.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "host" }));
-    b.onLoad({ filter: /.*/, namespace: "host" }, () => ({ contents: `export class App {} export class Modal {} export class Notice {} export class AbstractInputSuggest {} export class PluginSettingTab {} export class Scope {} export class Setting {} export class ButtonComponent {} export class ExtraButtonComponent {} export class SearchComponent {} export const setIcon=()=>{}; export const setTooltip=()=>{}; export const getIcon=()=>null; export const getIconIds=()=>[]; export const getLanguage=()=>"en"; export const Platform={};`, loader: "js" }));
+    b.onLoad({ filter: /.*/, namespace: "host" }, () => ({ contents: `export class App {} export class Modal {} export class SuggestModal extends Modal {} export class ColorComponent {} export class Notice {} export class AbstractInputSuggest {} export class PluginSettingTab {} export class Scope {} export class Setting {} export class ButtonComponent {} export class ExtraButtonComponent {} export class SearchComponent {} export const setIcon=()=>{}; export const setTooltip=()=>{}; export const getIcon=()=>null; export const getIconIds=()=>[]; export const getLanguage=()=>"en"; export const Platform={};`, loader: "js" }));
   }}] });
 const m = await import(pathToFileURL(join(temp, "model.mjs")));
 const env = device => ({ device });
@@ -211,7 +211,7 @@ test("actual quick debounce/unmount persists latest staged device once and canno
   const dependencies = { plugin, typographyDevice: "desktop", typographyDraft: ref(), typographySave: ref(),
     viewport: { current: { ownerDocument: { defaultView: ownerWindow }, classList: { remove() {} } } }, window: ownerWindow,
     suppressLayoutMotionUntil: ref(), suppressAutoFitUntil: ref(), preserveCameraOnNextLayout: ref(), sceneMotion: { cancelAll() {} }, setLayoutRevision() {},
-    layoutSaveTimer: ref(), layoutDraft: ref(), hoverIntentTimer: ref(), edgeTooltipTimer: ref(), sceneTransitionTimer: ref(), sceneTransitionTimerWindow: ref(), cameraFrame: ref(), cameraFrameWindow: ref() };
+    layoutSaveTimer: ref(), layoutDraft: ref(), hoverHighlight: ref(), edgeTooltipTimer: ref(), sceneTransitionTimer: ref(), sceneTransitionTimerWindow: ref(), cameraFrame: ref(), cameraFrameWindow: ref() };
   const quick = quickTypographyCallbacks(dependencies);
   quick.change({ baseFontSize: 18 }); quick.change({ maxLabelLength: 60 });
   plugin.stageTypographyOverride("tablet", { maxWidth: 500 });

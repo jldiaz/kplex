@@ -164,7 +164,7 @@ test("CSS hooks, variables, SVG markers and owning-document selectors use the K-
     }
   }
   for (const variable of ["panel", "panel-2", "line", "muted", "text", "accent"])
-    assert(css.includes(`--kplex-${variable}:`), `missing CSS variable ${variable}`);
+    assert(css.includes(`var(--kplex-${variable},`), `missing inheritable CSS variable ${variable}`);
   const graph = readFileSync(join(root, "src/ui/PlexGraph.tsx"), "utf8");
   for (const marker of ["arrow", "triangle", "dot", "bar"]) {
     assert(graph.includes(`id="kplex-${marker}"`), `missing SVG marker ${marker}`);

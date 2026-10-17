@@ -6,9 +6,11 @@
 
 ![KPLEX Screenshot](docs/KPlex-Screenshot-3.png)
 
-**K-Plex (Knowledge Plex)** is a spatial knowledge navigator for Obsidian. It keeps one note at the center and places related notes in predictable directions, so position carries meaning instead of constantly changing like a force-directed graph.
+**K-Plex (Knowledge Plex)** is an ontology-driven knowledge navigator for Obsidian. It turns relationships already expressed in your Markdown notes, properties, and vault structure into a spatial view you can explore and edit. The meaning of a relationship helps determine *where* it appears—not just how it looks.
 
-K-Plex is inspired by the navigation model of TheBrain. It provides a relationship-oriented way to explore your knowledge, with its own interface and indexing system. **Excalidraw and Dataview are not required.**
+At its heart is the **Idea Compass**: focus on one note, then look **north** for origins and parents, **south** for children and where an idea leads, **west** for friends and supporting connections, and **east** for challengers and transformative connections. As you navigate, these directions retain their meaning, helping you reason about your knowledge in context.
+
+**Explore, connect, and reshape your knowledge.** Drag notes from Obsidian's file explorer into the Plex to navigate or create relationships. Drag existing related nodes between directions to reorganize your knowledge. Open notes for editing without leaving the graph, use Graph Lenses to focus on what matters, or let Wander take you through connected ideas.
 
 [![Watch the video](https://img.youtube.com/vi/ii15UwpsvtU/maxresdefault.jpg)](https://www.youtube.com/watch?v=ii15UwpsvtU)
 
@@ -20,7 +22,7 @@ K-Plex is designed for people who want to *move through* their notes rather than
 
 ## Why K-Plex?
 
-Large graph views can quickly become dense and hard to navigate. K-Plex takes a different approach: it shows a **structured Plex around the current note** and keeps relationship directions stable.
+Large graph views can quickly become dense and hard to navigate. K-Plex uses the **Idea Compass** to show a structured neighborhood around the current note. Configured ontology and relationship evidence guide the direction of connections, rather than treating link types as styling alone. Right-click a connection and choose **Connection details…** to inspect the ontology and sources behind its placement.
 
 That makes the graph useful as a working surface:
 
@@ -70,9 +72,12 @@ On phones, K-Plex opens naturally in the side panel. Tablets can use either a no
 - Double-clicking a URL opens it in the browser.
 - Double-clicking an unresolved link can create the missing Markdown note. Placeholders carry only the unresolved note name; their real folder/path is assigned when the file is created.
 - Folder and tag nodes can also become the center.
+- An open, unpinned **File properties** pane follows the central file while K-Plex is active. Pinned or grouped Properties panes keep their own file; non-file centers clear the unpinned pane.
 - Drag empty graph space to pan and use the mouse wheel or pinch gesture to zoom.
 - Long-press on touch devices opens the same context menus available with right-click on desktop.
 - Clicking or touching empty graph space clears temporary node, gate and connector highlights.
+- Related connections require **Alt** (**Option** on macOS) while hovering over a node, gate or connector by default. Releasing the key clears the highlight. Turn off **Require modifier for hover highlighting** under **Settings → K-Plex → Plex behavior → Navigation & interaction** to use the short hover delay instead.
+- Dotted relation-area outlines and resize edges also require **Alt/Option** by default. **Require modifier for area outlines** controls this separately; explicit **Area settings** always shows the editable areas. Existing saved choices are preserved.
 - Right-click empty Plex space for **K-Plex settings**, **Zen mode**, **Full-screen mode**, **Set background color…**, **Wander**, and **Report a bug**. The background picker saves only when you select **Save**.
 - Use **Fit graph** whenever you want to bring the visible Plex back into view.
 
@@ -168,9 +173,11 @@ Saved notes and relationships update the Plex without waiting for a full indexin
 
 When folder nodes are visible, drag outward from a folder's **Child gate** to create a new Markdown note (or Excalidraw drawing when available) directly in that folder. The folder location itself supplies the file-tree relationship, so K-Plex does not create a separate note-to-note link. Ctrl/Cmd+Enter uses the same remembered Markdown/Excalidraw default as the normal create-child workflow, and folder creation never offers a placeholder because an unresolved placeholder has no physical folder yet. Dropping a regular note gate onto a folder remains available as a secondary file-only shortcut.
 
-Drag a file from Obsidian onto the central node to navigate to it. Drop it into a Parent, Friend, Challenger or Child area to open the linking dialog with that relationship type. The area for a valid relationship drop lights up while you drag.
+Drag a file from Obsidian Files, or a resolved note link from Bases, onto the central node to navigate to it. Drop it into a Parent, Friend, Challenger or Child area to open the linking dialog with that relationship type. The area for a valid relationship drop lights up while you drag.
 
-You can also drag an existing related node to another relationship area to reclassify it. K-Plex updates the graph immediately while the underlying note change is written. When K-Plex needs to create a new YAML/document property for a relationship, it adds that property at the bottom of the property list.
+Drag a sibling into a Parent, Friend, Challenger or Child area to add a direct relationship to the center. Its other relationships, including the shared parent, remain intact.
+
+You can also drag an existing direct neighbor to another relationship area to reclassify it. K-Plex updates the graph immediately while the underlying note change is written. When K-Plex needs to create a new YAML/document property for a relationship, it adds that property at the bottom of the property list.
 
 ### Connection details and unlinking
 
@@ -192,6 +199,12 @@ Right-click a connector to inspect, unlink or hide its relationship:
 - **Unlink connection** removes a single unambiguous editable property source directly. If several sources contribute to the edge, K-Plex opens Connection details rather than guessing which source you intended to remove.
 
 **Go to source** opens the real Markdown note at the relevant location, using the Sidecar when it is available. Continue editing there with Obsidian's normal editor, wikilinks, suggestions and hotkeys. The source Markdown files remain the source of truth; K-Plex does not create a separate database of edge notes.
+
+## Colors and appearance
+
+A fresh installation follows Obsidian’s theme. In **Settings → K-Plex → Visual styling → Colors**, choose fixed colors, live theme colors or named Light/Dark pairs for nodes, links and lenses. Existing saved colors stay intact; **Use theme colors for standard styles…** previews an explicit adoption.
+
+Optional **Directional background tint** adds four subtle Compass sectors behind the graph. It is off by default and follows the rendered center while you navigate. See [Colors and appearance](docs/APPEARANCE.md) for color sources, paired previews, palette management and tint settings.
 
 ## Quick Filter and Graph Lenses
 
@@ -400,7 +413,7 @@ Sibling relative size (30–85%) is under **Plex behavior → Layout & sizing**.
 
 1. **Plex behavior** — navigation, layout, visibility, animation and relationship behavior
 2. **Ontology** — separate pages for relationship fields, editor suggestions and discovered/unassigned vault properties
-3. **Visual styling** — canvas options plus dedicated **Node styling** and **Link styling** pages
+3. **Visual styling** — dedicated **Colors**, **Labels**, **Node styling** and **Link styling** pages
 4. **Sidecar** — companion-pane behavior and Markdown mode
 5. **Compatibility** — ExcaliBrain settings import and Excalidraw editor-node behavior
 

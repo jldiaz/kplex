@@ -5,10 +5,12 @@
  * is distinct from the central node and uses caller-supplied occurrence identity. Visible text shares
  * the density-independent geometry limit, preserving prefixes, ellipsis and center allowance.
  * The final image boundary rechecks consent before producing a src, including retained cached props.
+ * A separately referenced accessible name avoids Obsidian's competing node tooltip; visible labels
+ * retain the compact browser title, while gate hints and explicit page previews keep their owners.
  */
-import { type CSSProperties, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useId, type CSSProperties, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { GateSide, NodeVisual, PositionedNode } from "../types";
-import { alphaHexToCss } from "../index/style";
+import { nodePaint, nodePaintFallbacks } from "../index/style";
 import type { KplexSettings } from "../settings";
 import { effectiveLabelLimit, nodeLabelFontSize, gateDiameter } from "./layout";
 import { ObsidianIcon } from "./ObsidianIcon";
@@ -60,8 +62,8 @@ export function ThoughtNode({
   connectionState?: ConnectionDragState;
   onActivate: (node: PositionedNode) => void;
   onOpen: (node: PositionedNode) => void;
-  onHoverNode: (node: PositionedNode) => void;
-  onHoverGate: (node: PositionedNode, gate: GateSide) => void;
+  onHoverNode: (node: PositionedNode, event: ReactPointerEvent) => void;
+  onHoverGate: (node: PositionedNode, gate: GateSide, event: ReactPointerEvent) => void;
   onHoverEnd: () => void;
   onHoverPreview: (node: PositionedNode, target: HTMLElement, event: PointerEvent) => void;
   onGatePointerDown: (node: PositionedNode, gate: GateSide, event: ReactPointerEvent<HTMLSpanElement>) => void;
@@ -84,6 +86,7 @@ export function ThoughtNode({
     foldedTitle?: string;
   };
 }) {
+  const accessibleNameId = useId();
   // Cached props can outlive resolution. Remove the image before React can assign a denied src.
   if (visual && !canDisplayNodeImage(visual.path, settings.allowRemoteNodeImages)) visual = undefined;
   const style = node.style;
@@ -94,28 +97,23 @@ export function ThoughtNode({
   const max = effectiveLabelLimit(style.maxLabelLength ?? 30, node.role === "center");
   const display = label.length > max ? `${label.slice(0, Math.max(1, max - 1))}…` : label;
   const click = (e: MouseEvent) => { e.stopPropagation(); onActivate(node); };
-  const fill = alphaHexToCss(style.backgroundColor, "rgba(0,0,0,.42)");
-  const pattern = style.fillStyle === "hachure"
-    ? `repeating-linear-gradient(135deg, rgba(255,255,255,.07) 0 1px, transparent 1px 6px), ${fill}`
-    : style.fillStyle === "cross-hatch"
-      ? `repeating-linear-gradient(45deg, rgba(255,255,255,.06) 0 1px, transparent 1px 7px), repeating-linear-gradient(135deg, rgba(255,255,255,.06) 0 1px, transparent 1px 7px), ${fill}`
-      : fill;
+  const paint = nodePaint(style, nodePaintFallbacks(node));
   const gateSize = gateDiameter(style);
   const nodeCss = {
     left: node.x - node.width / 2,
     top: node.y - node.height / 2,
     width: node.width,
     height: node.height,
-    background: isSection || content ? undefined : pattern,
-    color: isSection || content ? undefined : alphaHexToCss(style.textColor, "white"),
-    borderColor: isSection || content ? undefined : alphaHexToCss(style.borderColor, "rgba(255,255,255,.18)"),
+    background: isSection || content ? undefined : paint.background,
+    color: isSection || content ? undefined : paint.foreground,
+    borderColor: isSection || content ? undefined : paint.border,
     borderWidth: isSection ? undefined : `${style.strokeWidth ?? 1}px`,
     borderStyle: isSection ? undefined : strokeStyle,
     borderRadius: isSection ? undefined : (style.strokeShaprness === "sharp" ? 5 : node.role === "center" ? 18 : 12),
     fontSize: `${nodeLabelFontSize(style.fontSize ?? 18, node.role === "center", settings.baseFontSize)}px`,
     "--kplex-gate-size": `${gateSize}px`,
-    "--kplex-gate-stroke": alphaHexToCss(style.gateStrokeColor, "rgba(226,239,255,.84)"),
-    "--kplex-gate-fill": alphaHexToCss(style.gateBackgroundColor, "rgba(226,239,255,.84)"),
+    "--kplex-gate-stroke": paint.gateStroke,
+    "--kplex-gate-fill": paint.gateFill,
     "--kplex-section-level": String(node.page.transient?.kind === "section" ? (node.page.transient.level ?? 1) : 0),
   } as CSSProperties;
 
@@ -144,7 +142,7 @@ export function ThoughtNode({
     aria-current={keyboardSelected ? "true" : undefined}
     onPointerDown={(e: ReactPointerEvent<HTMLDivElement>) => { onNodePointerDown(node, e); }}
     onPointerEnter={(e: ReactPointerEvent<HTMLDivElement>) => {
-      onHoverNode(node);
+      onHoverNode(node, e);
       // Obsidian-style page preview is intentionally explicit: hold Ctrl/Cmd while entering
       // a thought. Without the modifier no preview is scheduled at all, which avoids timer
       // churn while moving across a dense Plex.
@@ -166,8 +164,9 @@ export function ThoughtNode({
         onContextMenu(node, e);
       }
     }}
-    aria-label={translate("node.accessibleLabel", { label: node.label, path: node.page.path })}
+    aria-labelledby={accessibleNameId}
   >
+    <span id={accessibleNameId} className="kplex-accessible-name">{translate("node.accessibleLabel", { label: node.label, path: node.page.path })}</span>
     {content ? <div
       className="kplex-thought-embedded-content"
       onPointerDown={(e: ReactPointerEvent<HTMLDivElement>) => e.stopPropagation()}
@@ -233,8 +232,8 @@ export function ThoughtNode({
         <span
           className={`kplex-gate gate-${gate}${stat.hasAny ? " has-connections" : " is-empty"}${highlightedGates.has(gate) ? " is-highlighted" : ""}${gateDisabled ? " is-link-disabled" : ""}`}
           data-kplex-gate={gate}
-          onPointerEnter={(e: ReactPointerEvent<HTMLSpanElement>) => { e.stopPropagation(); onHoverGate(node, gate); }}
-          onPointerLeave={(e: ReactPointerEvent<HTMLSpanElement>) => { e.stopPropagation(); onHoverNode(node); }}
+          onPointerEnter={(e: ReactPointerEvent<HTMLSpanElement>) => { e.stopPropagation(); onHoverGate(node, gate, e); }}
+          onPointerLeave={(e: ReactPointerEvent<HTMLSpanElement>) => { e.stopPropagation(); onHoverNode(node, e); }}
           onPointerDown={(e: ReactPointerEvent<HTMLSpanElement>) => { onGatePointerDown(node, gate, e); }}
           onClick={(e: MouseEvent<HTMLSpanElement>) => e.stopPropagation()}
           aria-label={gateTitle}
