@@ -87,7 +87,7 @@ async function scenario(app,c){
     const text=await app.vault.read(app.vault.getFileByPath(b));
     assertLocal(text.includes('Keep: changed')&&text.includes('Unrelated prose.')&&!text.includes(`[[${a}]]`),'Unlink altered unrelated content or missed duplicate target');
     passed('reverse exact-source unlink removes duplicate target and preserves other content');
-    return {cases,indexingMode:p.settings.indexingMode,obsidian:app.getVersion?.()??null};
+    return {cases,indexingMode:p.settings.indexingMode};
   }finally{
     c.phase='cleanup';if(app.setting.isOpen)app.setting.close();
     for(const release of releases.splice(0))release();p=app.plugins.plugins['k-plex'];

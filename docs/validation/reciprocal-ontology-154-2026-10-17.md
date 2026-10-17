@@ -46,7 +46,8 @@ A full application restart was not tested. Optional follow-up device checks: ent
 and navigate both endpoints on macOS and mobile, then reopen its relationship editor.
 
 Runtime/test logic stayed frozen after full verification. Only documentation, test EOF
-whitespace and the Date driver's Windows backup-basename correction changed afterward; driver syntax and native
+whitespace, native diagnostic metadata cleanup and the Date driver's Windows
+backup-basename correction changed afterward; driver syntax and native
 acceptance passed on the exact same bundle. Final branch CI remains visible on the PR.
 No dependencies, versions, database migration, new scheduler or source-validation relaxation.
 Parsing is configuration-scoped; aliases are cached and extra provenance is optional.
@@ -62,7 +63,7 @@ and removes two owned notes and checks exact installed artifact hashes.
 
 Raw logs, reports and source-freeze receipts remain under
 `%TEMP%/kplex-154-review-2026-10-17/`: accepted `full-verification-v3`,
-`native-ontology-v1`, `native-date-v2`, and final `postflight.json`.
+`native-ontology-v2`, `native-date-v2`, and final `postflight.json`.
 The earlier interrupted verification, isolated-test dependency failure and Date-driver
 Windows-path failure remain preserved as superseded/failed runs, not accepted results.
 Initial workspace drift from the strict smoke was detected and the original session

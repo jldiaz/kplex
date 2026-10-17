@@ -4266,7 +4266,7 @@ Full Node 22.22.2 strict verification passes 2,061 TAP executions/lint/types/bui
 native actual Settings/reciprocal/reload/unlink 5 and Date 24 pass on Windows Obsidian1.14.4.
 Final original 107-file/settings/layout/bounds/configuration/debugger state restores and no active
 work/controllers remain. The strict smoke's workspace change was detected/restored independently.
-Runtime/test logic remained frozen after full verification; only test EOF whitespace, driver/docs changed afterward and
+Runtime/test logic remained frozen after full verification; only test EOF whitespace, native diagnostic metadata and driver/docs changed afterward and
 native driver acceptance passed. Superseded/failed logs remain local; no archive publication.
 See [review and evidence](docs/validation/reciprocal-ontology-154-2026-10-17.md).
 
