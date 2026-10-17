@@ -1,5 +1,13 @@
 # Reciprocal ontology mappings: PR #154 review
 
+> **Stopped at the maintainer's request; not approved for merge.** The final sorting
+> checkpoint preserves unrelated and removal-only ontology list order. Its 79 focused
+> tests and installed TypeScript checks pass; full verification v4 was interrupted on
+> request before native staging. Results below describe the earlier 3a1907c prototype,
+> not full acceptance of this final checkpoint. No indexing performance benchmark was
+> completed. Pair identity versus directional display/filter behavior remains unresolved;
+> no alternative design was implemented.
+
 Reviewed original head `4500a97aee91c99f21a2717ae160b375313d345a`, integrated main
 `d40a339ffce9cc40f332e20c5add2e01422cf847`, and corrected the findings below.
 The feature fixes a real ambiguity: `replies to/replied by` in Previous shows the

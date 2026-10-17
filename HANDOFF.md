@@ -16,15 +16,16 @@ Obsidian is the production host; preserve the established portable semantic, ide
 
 ---
 
-# PR #154: accepted implementation, main owns repository closeout
+# Inactive: PR #154 fix/merge attempt cancelled by maintainer
 
-Offline implementation and independent review are complete/inactive. Main independently reviewed
-and accepted the scoped fixes. Branch feat/ontology-inverse-slash-syntax integrates main d40a339;
-original PR head 4500a97. Full Node 22.22.2 strict verification passes 2,061 test executions and exact
-Obsidian smoke; native reciprocal Settings/reload/unlink 5 and Date 24 pass. Runtime/test logic stayed
-frozen after the full run; test EOF whitespace, Date-driver basename repair and docs were checked afterward. All original
-disposable state restores, with no active work/controllers. Details and limits are in the durable
-review report and Refactor plan. Raw/superseded evidence remains local, never archive this handoff.
+The user requested committing the current sorting correction, then aborting all further
+fix/merge work. No active offline assignment or automatic continuation. Main owns only
+checkpoint commit/push, cancellation/cleanup and returning to main. Do not implement a new
+pair/display design, run performance trials, approve/merge154 or release anything.
 
-Main owns final staging/commit/push/CI, authorized PR merge, then main/fetch. No offline changes
-pending, personal-vault access, release, further optimization or structural refactor authorized.
+Sorting correction preserves unrelated/removal-only role order and sorts only appended-to
+roles. Focused79 and installed TypeScript checks pass on Node22.22.2. Full verification v4
+was explicitly interrupted before native staging; do not report its partial run as passed.
+Earlier prototype acceptance/evidence remains separate and local. No indexing benchmark
+completed. Pair-level filtering versus directional labels remains unresolved; the maintainer
+will likely create a separate PR. Durable status is in Refactor plan and the validation report.

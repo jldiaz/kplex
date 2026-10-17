@@ -213,6 +213,7 @@ export function reassignFieldInHierarchy(
   const selected = new Set([inputMapping.normalizedForward, inputMapping.normalizedInverse].filter(
     /** Empty inverse tokens cannot select unrelated settings entries. */ (name): name is string => !!name));
   const preserved: Array<{role: OntologyFieldRole; entry: string}> = [];
+  const sortRoles = new Set<OntologyFieldRole>([destinationRole]);
   for (const role of roles) {
     const list = getRoleList(hierarchy, role), kept: string[] = [];
     for (const entry of list) {
@@ -225,17 +226,19 @@ export function reassignFieldInHierarchy(
       if (!forwardSelected) preserved.push({role, entry: mapping.forward});
       if (mapping.inverse && !inverseSelected) preserved.push({role: reciprocalRoleForGroup(role), entry: mapping.inverse});
     }
-    list.splice(0, list.length, ...kept);
+    if (kept.length !== list.length) list.splice(0, list.length, ...kept);
   }
   for (const {role, entry} of preserved) {
     const normalized = normalizeFieldName(entry);
     const present = role === "hidden" || role === "excluded"
       ? getRoleList(hierarchy, role).some(/** Directional groups compare literal physical names. */ value => normalizeFieldName(value) === normalized)
       : ontologyFieldsForHierarchyRole(hierarchy, role).some(/** Existing effective assignments need no duplicate singleton. */ value => normalizeFieldName(value) === normalized);
-    if (!present) getRoleList(hierarchy, role).push(entry);
+    if (!present) { getRoleList(hierarchy, role).push(entry); sortRoles.add(role); }
   }
   getRoleList(hierarchy, destinationRole).push(targetEntry);
-  for (const role of roles) getRoleList(hierarchy, role).sort(/** Retain the established case-insensitive settings ordering. */
+  // Only appended-to roles use the established editor ordering. Other arrays retain precedence
+  // and their first-choice defaults, including roles that merely lost a selected field.
+  for (const role of sortRoles) getRoleList(hierarchy, role).sort(/** Sort a newly extended role without reordering unrelated settings. */
     (a, b) => a.localeCompare(b, undefined, {sensitivity: "base"}));
   return hierarchy;
 }

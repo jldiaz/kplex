@@ -4274,3 +4274,19 @@ macOS, minimum-host, physical mobile and whole-app restart remain untested; opti
 acceptance should exercise paired names in Settings and both endpoint editors. No efficiency
 benchmark claim. Main may commit/push and merge only after final CI under explicit user authority,
 then return to main/fetch; no release or further optimization authorized by this checkpoint.
+
+
+### 2026-10-17: O2, sorting checkpoint and cancelled #154 review
+
+At parent3a1907c, restricted reassignment sorting to the destination and roles actually
+receiving a preserved counterpart. Unrelated and removal-only role order/default precedence
+remain unchanged; avoid replacing unmodified arrays. New regression covers existing/missing
+counterparts and selector roles. Focused79 plus core/full installed TypeScript pass on
+Node22.22.2. Full verification v4 was stopped on explicit user request before native staging;
+its partial log is not an acceptance pass. Earlier prototype tests/native/CI are separate.
+
+The maintainer requested committing this correction and aborting further fix/merge work, and
+expects a separate future PR for the product intent. Stop performance trials, architecture
+analysis and implementation. No indexing performance result or alternative design is claimed.
+Do not approve/merge/release154; preserve raw evidence. Pair identity for lenses/filters versus
+directional labels is unresolved and requires a separately authorized task. C14 remains paused.

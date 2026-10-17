@@ -482,6 +482,27 @@ test("pair reassignment preserves unrelated halves from every intersecting exist
   assert.deepEqual(c.ontologyFieldsForHierarchyRole(hierarchy,'next'),['C']);
 });
 
+test("reassignment sorts only destination and newly extended counterpart roles, preserving all other precedence", () => {
+  for(const counterpartAlreadyPresent of [false,true]){
+    const hierarchy={hidden:['Z-hidden','A-hidden'],parents:['Z-parent','Move/Counterpart','A-parent'],
+      children:counterpartAlreadyPresent?['Z-child','Counterpart','A-child']:['Z-child','A-child'],
+      leftFriends:['Z-friend','A-friend'],rightFriends:['Z-challenge','A-challenge'],
+      previous:['Z-previous','A-previous'],next:['Z-next','A-next'],exclusions:['Z-excluded','A-excluded']};
+    const before=structuredClone(hierarchy);
+    c.reassignFieldInHierarchy(hierarchy,'Move','right',{literal:true});
+    assert.deepEqual(hierarchy.parents,['Z-parent','A-parent'],'A role that only loses a field keeps its remaining order');
+    assert.deepEqual(hierarchy.rightFriends,['A-challenge','Move','Z-challenge'],'The destination retains established sorted insertion');
+    assert.deepEqual(hierarchy.children,counterpartAlreadyPresent?before.children:['A-child','Counterpart','Z-child'],
+      'A counterpart role is sorted only if its preserved half was actually appended');
+    for(const role of ['hidden','leftFriends','previous','next','exclusions'])assert.deepEqual(hierarchy[role],before[role],role+' precedence remains unchanged');
+    assert.equal(c.ontologyFieldsForHierarchyRole(hierarchy,'parent')[0],'Z-parent');
+    assert.equal(c.ontologyFieldsForHierarchyRole(hierarchy,'previous')[0],'Z-previous');
+    const selector=new c.ReferencePolicySelector({hierarchy});
+    assert.deepEqual(selector.assignmentsForField('Move').map(item=>item.role),['right']);
+    assert.deepEqual(selector.assignmentsForField('Counterpart').map(item=>item.role),['child']);
+  }
+});
+
 test("physical literal slashes stay literal when menus reassign escaped or directional fields", () => {
   const hierarchy={...emptyHierarchy(),parents:['Track\\/Part'],hidden:['Hidden/Path'],exclusions:[]};
   c.reassignFieldInHierarchy(hierarchy,'Track/Part','child',{literal:true});
